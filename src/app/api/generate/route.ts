@@ -3,7 +3,6 @@ import { NextResponse } from "next/server";
 type PackageType = "firstPass" | "reviewPackage" | "externalDelivery";
 
 type RequestBody = {
-  mode: string;
   matterTypes: string[];
   packageType?: PackageType;
   primaryMatterType?: string;
@@ -160,6 +159,7 @@ type EscalationMemoOutput = {
   paralegalWorkQueue: ParalegalWorkItem[];
   watchlistSummary: WatchlistSummary;
   draftResponse: string;
+  processNotes: string;
   sourceDocuments: SourceDocument[];
   internalStopConditions: StopCondition[];
 };
@@ -258,7 +258,7 @@ function isExternalDeliveryContext(
 }
 
 function getPrimaryMatterType(body: RequestBody): string {
-  return body.primaryMatterType || body.matterTypes[0] || body.mode || "";
+  return body.primaryMatterType || body.matterTypes[0] || "";
 }
 
 function getRiskFlags(body: RequestBody): string[] {
@@ -1536,7 +1536,7 @@ function buildMatterTitle(body: RequestBody): string {
     return "Mutual release + NDA";
   }
 
-  return body.matterTypes[0] || body.mode || "Attorney Review";
+  return body.matterTypes[0] || "Attorney Review";
 }
 
 function buildEscalationMemo(args: {
@@ -1588,6 +1588,7 @@ function buildEscalationMemo(args: {
     }),
     watchlistSummary: buildWatchlistSummary(oldMatterTerms, oldMatterHits),
     draftResponse: buildDraftResponse(stopConditions, packageType),
+    processNotes: body.processNotes,
     sourceDocuments,
     internalStopConditions: stopConditions,
   };
@@ -1727,6 +1728,14 @@ function renderWatchlistSummary(summary: WatchlistSummary): string[] {
   ];
 }
 
+function renderHumanProcessNotes(processNotes: string): string[] {
+  const notes = processNotes.trim();
+
+  if (!notes) return ["- None."];
+
+  return notes.split(/\r?\n/).map((line) => `- ${line.trim()}`).filter(Boolean);
+}
+
 function renderSourceDocuments(docs: SourceDocument[]): string[] {
   if (docs.length === 0) return ["- None."];
 
@@ -1780,6 +1789,9 @@ function renderEscalationMemo(memo: EscalationMemoOutput): string {
     `## 9. Draft Response`,
     memo.draftResponse,
     ``,
+    `## 10. Human Process Notes`,
+    ...renderHumanProcessNotes(memo.processNotes),
+    ``,
     `## Appendix A. Source Documents`,
     ...renderSourceDocuments(memo.sourceDocuments),
     ``,
@@ -1808,8 +1820,6 @@ export async function POST(request: Request) {
     typeof body.primaryMatterType === "string" ? body.primaryMatterType : "";
 
   const missing: string[] = [];
-
-  if (!body.mode || typeof body.mode !== "string") missing.push("mode");
 
   if (!body.primaryMatterType && body.matterTypes.length === 0) {
     missing.push("primaryMatterType or matterTypes");
@@ -1842,6 +1852,9 @@ export async function POST(request: Request) {
     );
   }
 
+  body.rawMaterials =
+    typeof body.rawMaterials === "string" ? body.rawMaterials : "";
+
   body.currentDraft =
     typeof body.currentDraft === "string" ? body.currentDraft : "";
 
@@ -1850,6 +1863,8 @@ export async function POST(request: Request) {
 
   body.oldMatterTerms =
     typeof body.oldMatterTerms === "string" ? body.oldMatterTerms : "";
+
+  body.partyInfo = typeof body.partyInfo === "string" ? body.partyInfo : "";
 
   body.dealTerms = typeof body.dealTerms === "string" ? body.dealTerms : "";
 

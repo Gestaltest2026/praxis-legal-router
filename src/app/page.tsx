@@ -2,14 +2,6 @@
 
 import { useState } from "react";
 
-const WORKFLOW_MODES = [
-  "General Attorney Review Memo",
-  "NDA Preparation",
-  "NDA Difference Analysis",
-  "NDA Branching Logic",
-  "NDA Attorney-Review Ready Package",
-];
-
 const PRIMARY_MATTER_TYPES = [
   "New NDA from scratch",
   "Prior agreement converted to new matter",
@@ -60,7 +52,6 @@ type Preset = "firstPass" | "reviewPackage" | "externalDelivery";
 type ReviewerType = "Admin" | "Paralegal" | "Attorney";
 
 type FormState = {
-  mode: string;
   primaryMatterType: string;
   riskFlags: string[];
   rawMaterials: string;
@@ -120,7 +111,6 @@ const PACKAGE_COPY: Record<
 };
 
 const initialForm: FormState = {
-  mode: "NDA Preparation",
   primaryMatterType: "Mutual release + NDA",
   riskFlags: [],
   rawMaterials: "",
@@ -298,7 +288,6 @@ export default function Home() {
     !form.attorneyApprovedForExternalDelivery;
 
   const canSubmit =
-    form.mode.trim() !== "" &&
     form.primaryMatterType.trim() !== "" &&
     form.rawMaterials.trim() !== "" &&
     form.partyInfo.trim() !== "" &&
@@ -320,7 +309,6 @@ export default function Home() {
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
-          mode: form.mode,
           packageType: activePreset,
           primaryMatterType: form.primaryMatterType,
           riskFlags: form.riskFlags,
@@ -734,20 +722,11 @@ export default function Home() {
             <section style={cardStyle}>
               <div style={cardHeaderStyle}>Advanced</div>
 
-              <label style={labelStyle}>Workflow Mode</label>
-              <select
-                style={inputStyle}
-                value={form.mode}
-                onChange={(e) => set("mode", e.target.value)}
-              >
-                {WORKFLOW_MODES.map((mode) => (
-                  <option key={mode} value={mode}>
-                    {mode}
-                  </option>
-                ))}
-              </select>
-
               <label style={labelStyle}>Human Process Notes</label>
+              <div style={hintStyle}>
+                Optional internal notes. These should be included in the memo
+                once the backend is wired to render process notes.
+              </div>
               <textarea
                 style={textareaStyle}
                 rows={5}

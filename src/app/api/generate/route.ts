@@ -1,9 +1,4 @@
 import { NextResponse } from "next/server";
-import Groq from "groq-sdk";
-
-const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
-
-const MODEL = "llama-3.1-8b-instant";
 
 type RequestBody = {
   mode: string;
@@ -26,169 +21,99 @@ type DealTermRow = {
   raw: string;
 };
 
-const HARD_RULES = `You are Praxis, an NDA preparation assistant for a law firm employee.
-You are not a lawyer. You never give legal advice or legal conclusions.
+type StopStatus = "OPEN" | "CLEARED" | "MODEL CHECK REQUIRED";
 
-HARD RULES
-1. Never state whether a clause is legally correct, enforceable, or advisable.
-2. Phrase every legal question as a neutral numbered question for the attorney. No recommendations.
-3. Never invent facts, parties, amounts, or dates. Missing information goes in the Missing Information section.
-4. Never correct or rewrite document text. You detect and label only.
-5. If any Do Not Send condition is open, the Draft Response section must contain exactly: "Not produced — [reason]".
-6. Admin / Paralegal Fixes must describe detected issues, not rewrite instructions. Prefer "X appears/missing/mismatch — verify before attorney review." Do not use "Update X to..." unless the replacement value is directly provided by Party Information or Deal Terms and the issue is purely mechanical.
-7. Branches Triggered must include only triggered branches. Do not include "none", "N/A", or inactive branches.
-8. Key Facts must not include legal clause-review issues such as jurisdiction, forum, fee-shifting, release scope, non-compete, drafting voice, remedy language, or venue language. Put those under Branches Triggered, Attorney Decision Points, or Admin / Paralegal Fixes.
-
-APPLICATION-LEVEL SOURCE OF TRUTH RULES
-1. Current parties may only come from PARTY INFORMATION.
-2. Do not identify any party from Raw Materials or Current Draft as a current party unless that party also appears in PARTY INFORMATION.
-3. Items in OLD / EXCLUDED NAMES AND TERMS are never current parties, never current facts, and never missing party information.
-4. Excluded items may appear only under Stop Conditions, Branches Triggered, Admin / Paralegal Fixes, or Items Not Touched.
-5. Key Facts must include only current-matter facts from Party Information, Deal Terms, Client Email, or Attorney Instruction.
-6. Old-matter residue must not appear in Matter Summary or Key Facts.
-7. Do not convert Unknown or Inherited provenance into Known. Ask for confirmation instead.
-8. If the deadline is blank and DEADLINE INTENTIONALLY BLANK is No, do not say it was intentionally left blank.
-9. DETERMINISTIC STOP CHECKS are controlling. If they identify S1, S3, S4, S6, S7, or S8, report those statuses exactly.
-10. If DETERMINISTIC STOP CHECKS says MODEL CHECK REQUIRED for S2 or S5, include that line in Stop Conditions unless you can clearly mark it OPEN or CLEARED from the provided materials.
-
-OLD-MATTER RESIDUE RULE
-If a name, date, amount, address, or fact appears in Raw Materials or Current Draft but is listed under Old / Excluded Names and Terms, treat it as old-matter residue.
-Do not list old-matter residue as Missing Information or Key Facts.
-List it only under Stop Conditions, Branches Triggered, Admin / Paralegal Fixes, or Items Not Touched.
-
-SOURCE DOCUMENT LABEL RULE
-In Source Documents, use only these labels:
-BASE, REFERENCE, QUARANTINED, CLIENT EMAIL, ATTORNEY INSTRUCTION, UNKNOWN.
-Do not use branch labels such as [Admin Fix] or [Attorney Review] as Source Document labels.
-
-ATTORNEY INSTRUCTION RULE
-If Raw Materials contains a section labeled ATTORNEY INSTRUCTION and it contains a non-empty instruction, S6 must be CLEARED.
-If the instruction is vague, mark S6 as CLEARED but note that the objective is sparse.
-Do not mark S6 OPEN when an ATTORNEY INSTRUCTION section exists and contains text.
-
-DEAL TERM PROVENANCE RULE
-If any Deal Term has Provenance = Unknown or Inherited, S3 is OPEN.
-Do not rewrite that term as confirmed.
-Do not tell the user to update the provenance to Known.
-Instead, identify it as requiring confirmation or attorney review.
-
-LABELS — classify every finding as exactly one:
-[Admin Fix] mechanical: old names/dates/addresses, broken merge fields, numbering, heading typos, formatting.
-[Paralegal Review] needs cross-check against the Party Information or Deal Terms tables before fixing.
-[Attorney Review] amounts, release scope, venue changes, drafting-voice shifts ("PARTIES" vs "you"), restrictive covenant radius/duration, individual-capacity decisions, asymmetric remedies in mutual clauses, equity components, undefined terms.
-[Client Follow-Up] missing factual input only the client can supply.
-[Human Confirmation Required] intent the documents cannot show: blank-date intent, hybrid-template status, whether a change was deliberate. If Human Process Notes are empty, mark all such items UNRESOLVED; if provided, apply them and state which items they resolve.
-[Do Not Send] an old/excluded matter term appears in the current draft; the draft is not confirmed attorney-approved; no send authorization exists.
-
-STOP CONDITIONS — check all, report each as OPEN or CLEARED:
-S1 Old/excluded matter term appears in the current draft → Do Not Send.
-S2 Any source document whose caption/title parties differ from its body parties → quarantine it; Human Confirmation Required.
-S3 Any Deal Term with Provenance = Unknown or Inherited → Attorney Review before use.
-S4 Deadline empty and not marked intentionally blank → Human Confirmation Required.
-S5 Any party missing name, address, or capacity → Client Follow-Up.
-S6 No attorney instruction found in Raw Materials → state the assumed objective and flag it.
-S7 Draft not confirmed as the attorney-approved version → Do Not Send for external delivery.
-S8 Equity or membership-interest language ("membership interest", "certificates") anywhere → Attorney Review before drafting the exchange clause.`;
-
-const PROMPTS: Record<string, string> = {
-  "General Attorney Review Memo": `${HARD_RULES}
-
-TASK
-Produce a concise one-page attorney review memo from the provided materials, using the output skeleton in the user message. Skip NDA-specific branch detection; still apply the labels and any stop conditions that plainly appear.
-
-OUTPUT
-Return only the fixed markdown package format given in the user message. Professional, concise English.`,
-
-  "NDA Preparation": `${HARD_RULES}
-
-TASK
-Run the full NDA preparation workflow: classify the matter, extract parties and deal terms, detect branches, detect stop conditions, and produce the attorney-review ready package.
-
-DETECTION DUTIES
-- Treat DETERMINISTIC STOP CHECKS as controlling.
-- If DETERMINISTIC STOP CHECKS says S1 OPEN, report S1 OPEN exactly and use the listed old/excluded terms as the reason.
-- If DETERMINISTIC STOP CHECKS says S3 OPEN, report S3 OPEN exactly and use the listed deal terms as the reason.
-- If DETERMINISTIC STOP CHECKS says S4 OPEN, report S4 OPEN exactly.
-- If DETERMINISTIC STOP CHECKS says S6 CLEARED, report S6 CLEARED.
-- If DETERMINISTIC STOP CHECKS says S7 OPEN, report S7 OPEN exactly.
-- If DETERMINISTIC STOP CHECKS says S8 OPEN, report S8 OPEN exactly and use the listed terms as the reason.
-- Include S1 through S8 in Stop Conditions. If S2 or S5 is not deterministically checked, include the MODEL CHECK REQUIRED line.
-- Do not treat old/excluded terms as current parties, current facts, or missing party information.
-- Matter Summary must identify current parties only from PARTY INFORMATION.
-- Key Facts must exclude old-matter residue and legal clause-review issues.
-- Compare Raw Materials against the Final/Current Draft when both exist.
-- Check every party in Party Information against caption, recitals, notices, signature blocks, and initials in the draft.
-- Flag any Deal Term whose provenance is Inherited or Unknown.
-- If Human Process Notes are empty, mark all Human Confirmation items UNRESOLVED; if provided, apply them and say which items they resolve.
-
-OUTPUT
-Return only the fixed markdown package format given in the user message. Professional, concise English.`,
-
-  "NDA Difference Analysis": `${HARD_RULES}
-
-TASK
-Compare the documents in Raw Materials against the Final/Current Draft. Return a markdown difference table with columns: Location | Source version | Draft version | Label | Reason. Label every difference as Mechanical ([Admin Fix]/[Paralegal Review]) or Attorney-Sensitive ([Attorney Review]) or [Human Confirmation Required]. After the table, list any stop conditions S1–S8 that the differences reveal, each OPEN or CLEARED. Do not produce a full package.`,
-
-  "NDA Branching Logic": `${HARD_RULES}
-
-TASK
-Identify which branching rules fire on these materials. For each fired rule, output a card:
-RULE: [short name]
-CONDITION MET: [what was found]
-EVIDENCE: [short quote or location]
-REQUIRES: [label]
-WHY: [one practical sentence]
-Then list all stop conditions S1–S8 as OPEN or CLEARED. Do not produce a full package or draft text.`,
-
-  "NDA Attorney-Review Ready Package": `${HARD_RULES}
-
-TASK
-Assume analysis is already reflected in the provided fields and notes. Assemble the attorney-review ready package from the structured inputs using the output skeleton in the user message. Do not re-analyze beyond confirming stop conditions S1–S8.
-
-OUTPUT
-Return only the fixed markdown package format given in the user message. Professional, concise English.`,
+type StopCondition = {
+  id: "S1" | "S2" | "S3" | "S4" | "S5" | "S6" | "S7" | "S8";
+  condition: string;
+  status: StopStatus;
+  message: string;
 };
 
-const OUTPUT_SKELETON = `Fill in this exact markdown structure:
+type SourceDocument = {
+  document: string;
+  internalDate: string;
+  label:
+    | "REFERENCE"
+    | "QUARANTINED"
+    | "CLIENT EMAIL"
+    | "ATTORNEY INSTRUCTION"
+    | "UNKNOWN";
+  evidence: string;
+};
 
-# Attorney-Review Ready Package — [Matter]
+type ExecutiveStatus = {
+  status:
+    | "Do Not Send"
+    | "Attorney Review Required"
+    | "Ready for Attorney Review";
+  reason: string;
+};
 
-## Matter Summary
-[2–3 sentences; if the objective is assumed, write "ASSUMED:" before it]
+type CriticalBlock = {
+  id: string;
+  issue: string;
+  impact: string;
+  owner: string;
+};
 
-## Current Phase
-Phase [1–10] — [one line]
+type MatterSnapshot = {
+  currentEntities: string[];
+  currentIndividuals: string[];
+  selectedWorkflows: string[];
+  dealTerms: DealTermRow[];
+};
 
-## Source Documents
-| Document | Internal date | Label | Evidence |
-|---|---|---|---|
+type ConfirmationOwner =
+  | "Client Follow-Up"
+  | "Internal Cross-Check"
+  | "Attorney Review"
+  | "Human Confirmation Required";
 
-## Key Facts
-- [max 5 bullets]
+type ConfirmationItem = {
+  item: string;
+  owner: ConfirmationOwner;
+  source: string;
+};
 
-## Missing Information
-- [item] — [follow-up status]
+type AttorneyDecisionCard = {
+  issue: string;
+  whyItMatters: string;
+  decisionNeeded: string;
+  evidence: string;
+  routing: "Attorney Review" | "Human Confirmation Required";
+};
 
-## Branches Triggered
-- [matter type or rule] — [reason] — [label]
+type ParalegalWorkItem = {
+  task: string;
+  owner: "Paralegal" | "Internal QA" | "Attorney";
+  priority: "Critical" | "High" | "Normal";
+};
 
-## Stop Conditions
-- S# [condition] — OPEN/CLEARED/MODEL CHECK REQUIRED — [message]
+type WatchlistSummary = {
+  totalChecked: number;
+  detected: string[];
+  clearCount: number;
+};
 
-## Attorney Decision Points
-1. [question]
+type EscalationMemoOutput = {
+  matterTitle: string;
+  executiveStatus: ExecutiveStatus;
+  criticalBlocks: CriticalBlock[];
+  matterSnapshot: MatterSnapshot;
+  confirmationNeeded: ConfirmationItem[];
+  attorneyDecisionCards: AttorneyDecisionCard[];
+  paralegalWorkQueue: ParalegalWorkItem[];
+  watchlistSummary: WatchlistSummary;
+  draftResponse: string;
+  sourceDocuments: SourceDocument[];
+  internalStopConditions: StopCondition[];
+};
 
-## Admin / Paralegal Fixes
-- [fix] — [location] — [Admin Fix or Paralegal Review]
-
-## Items Not Touched
-- [item] — [reason]
-
-## Immediate Next Action
-[one sentence]
-
-## Draft Response
-[bracketed draft text, or "Not produced — [reason]"]`;
+type RawSection = {
+  heading: string;
+  content: string;
+};
 
 function splitLines(value: string): string[] {
   return value
@@ -197,16 +122,43 @@ function splitLines(value: string): string[] {
     .filter(Boolean);
 }
 
+function normalizeText(value: string): string {
+  return value
+    .normalize("NFKC")
+    .replace(/[“”]/g, '"')
+    .replace(/[‘’]/g, "'")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function termToRegex(term: string): RegExp {
+  const normalized = normalizeText(term);
+  const escaped = escapeRegExp(normalized).replace(/\s+/g, "\\s+");
+
+  const startsWord = /^[a-z0-9]/i.test(normalized);
+  const endsWord = /[a-z0-9]$/i.test(normalized);
+
+  const prefix = startsWord ? "(^|[^a-z0-9])" : "";
+  const suffix = endsWord ? "($|[^a-z0-9])" : "";
+
+  return new RegExp(`${prefix}${escaped}${suffix}`, "i");
+}
+
 function findOldMatterHits(
   currentDraft: string,
   oldMatterTerms: string
 ): string[] {
   if (!currentDraft || !oldMatterTerms) return [];
 
-  const draftLower = currentDraft.toLowerCase();
+  const normalizedDraft = normalizeText(currentDraft);
 
   return splitLines(oldMatterTerms).filter((term) =>
-    draftLower.includes(term.toLowerCase())
+    termToRegex(term).test(normalizedDraft)
   );
 }
 
@@ -226,37 +178,107 @@ function parseDealTerms(dealTerms: string): DealTermRow[] {
     .filter((row) => row.term || row.value || row.provenance);
 }
 
+function isUnresolvedProvenance(provenance: string): boolean {
+  const value = normalizeText(provenance);
+
+  if (!value) return true;
+
+  return [
+    "unknown",
+    "inherited",
+    "unclear",
+    "tbd",
+    "to be confirmed",
+    "not confirmed",
+    "needs confirmation",
+    "pending confirmation",
+    "要確認",
+    "不明",
+    "未確認",
+    "未定",
+    "確認中",
+  ].includes(value);
+}
+
 function findUnresolvedDealTerms(dealTerms: string): DealTermRow[] {
   return parseDealTerms(dealTerms).filter((row) =>
-    /^(unknown|inherited)$/i.test(row.provenance)
+    isUnresolvedProvenance(row.provenance)
   );
+}
+
+function parseRawSections(rawMaterials: string): RawSection[] {
+  const text = rawMaterials || "";
+  const markerRegex = /^---\s*([A-Z0-9 _/-]+?)\s*---\s*$/gim;
+  const matches = [...text.matchAll(markerRegex)];
+
+  if (matches.length === 0) {
+    return text.trim()
+      ? [{ heading: "RAW MATERIALS", content: text.trim() }]
+      : [];
+  }
+
+  return matches
+    .map((match, index) => {
+      const heading = (match[1] || "").trim();
+      const start = (match.index || 0) + match[0].length;
+      const end =
+        index + 1 < matches.length ? matches[index + 1].index || text.length : text.length;
+      const content = text.slice(start, end).trim();
+
+      return { heading, content };
+    })
+    .filter((section) => section.heading && section.content);
+}
+
+function sectionLabel(heading: string): SourceDocument["label"] {
+  const normalized = normalizeText(heading);
+
+  if (/client|email/.test(normalized)) return "CLIENT EMAIL";
+  if (/attorney|instruction/.test(normalized)) return "ATTORNEY INSTRUCTION";
+
+  return "REFERENCE";
+}
+
+function sectionDocumentName(heading: string): string {
+  const normalized = normalizeText(heading);
+
+  if (/template/.test(normalized)) return "Template";
+  if (/client|email/.test(normalized)) return "Client Email";
+  if (/attorney|instruction/.test(normalized)) return "Attorney Instruction";
+
+  return heading
+    .toLowerCase()
+    .replace(/\b\w/g, (char) => char.toUpperCase());
+}
+
+function excerpt(value: string, maxLength = 160): string {
+  const compact = value.replace(/\s+/g, " ").trim();
+
+  if (!compact) return "Provided by user.";
+
+  if (compact.length <= maxLength) return compact;
+
+  return `${compact.slice(0, maxLength - 1).trim()}…`;
 }
 
 function detectAttorneyInstruction(rawMaterials: string): boolean {
-  if (!rawMaterials) return false;
+  const sections = parseRawSections(rawMaterials);
 
-  const match = rawMaterials.match(
-    /---\s*ATTORNEY INSTRUCTION\s*---([\s\S]*)/i
-  );
-
-  if (!match) return false;
-
-  const instructionText = match[1]
-    .split(/---\s*[A-Z0-9 _/-]+\s*---/i)[0]
-    .trim();
-
-  return instructionText.length > 0;
+  return sections.some((section) => {
+    const heading = normalizeText(section.heading);
+    return /attorney|instruction/.test(heading) && section.content.trim().length > 0;
+  });
 }
 
 function findEquityLanguageHits(body: RequestBody): string[] {
-  const haystack = [
-    body.rawMaterials,
-    body.currentDraft,
-    body.dealTerms,
-    body.matterTypes.join("\n"),
-  ]
-    .join("\n")
-    .toLowerCase();
+  const haystack = normalizeText(
+    [
+      body.rawMaterials,
+      body.currentDraft,
+      body.dealTerms,
+      body.matterTypes.join("\n"),
+    ].join("\n")
+  );
 
   const terms = [
     "membership interest",
@@ -264,245 +286,699 @@ function findEquityLanguageHits(body: RequestBody): string[] {
     "membership certificate",
     "membership certificates",
     "certificates evidencing",
-    "equity",
+    "equity interest",
+    "ownership interest",
+    "member interest",
+    "llc interest",
   ];
 
-  return terms.filter((term) => haystack.includes(term));
+  return terms.filter((term) => termToRegex(term).test(haystack));
 }
 
-function buildDeterministicStopChecks(
-  body: RequestBody,
-  oldMatterHits: string[],
-  unresolvedDealTerms: DealTermRow[],
-  hasAttorneyInstruction: boolean,
-  equityLanguageHits: string[]
-): string {
-  const checks: string[] = [];
+function buildStopConditions(args: {
+  body: RequestBody;
+  oldMatterHits: string[];
+  unresolvedDealTerms: DealTermRow[];
+  hasAttorneyInstruction: boolean;
+  equityLanguageHits: string[];
+}): StopCondition[] {
+  const {
+    body,
+    oldMatterHits,
+    unresolvedDealTerms,
+    hasAttorneyInstruction,
+    equityLanguageHits,
+  } = args;
 
-  if (oldMatterHits.length > 0) {
-    checks.push(
-      `S1 OPEN — Old/excluded matter terms found in current draft: ${oldMatterHits.join(
-        ", "
-      )}`
-    );
-  } else {
-    checks.push(
-      `S1 CLEARED — No old/excluded matter terms found in current draft.`
-    );
-  }
+  return [
+    {
+      id: "S1",
+      condition: "Old/excluded matter term appears in the current draft",
+      status: oldMatterHits.length > 0 ? "OPEN" : "CLEARED",
+      message:
+        oldMatterHits.length > 0
+          ? oldMatterHits.join(", ")
+          : "No old/excluded matter terms found in current draft.",
+    },
+    {
+      id: "S2",
+      condition: "Source caption/title parties differ from body parties",
+      status: "MODEL CHECK REQUIRED",
+      message:
+        "Evaluate whether any source caption/title parties differ from body parties.",
+    },
+    {
+      id: "S3",
+      condition:
+        "Deal term provenance is Unknown, Inherited, blank, or unresolved",
+      status: unresolvedDealTerms.length > 0 ? "OPEN" : "CLEARED",
+      message:
+        unresolvedDealTerms.length > 0
+          ? unresolvedDealTerms
+              .map(
+                (row) =>
+                  `${row.term || "(blank term)"} (${
+                    row.provenance || "blank"
+                  })`
+              )
+              .join(", ")
+          : "No unresolved deal-term provenance found.",
+    },
+    {
+      id: "S4",
+      condition: "Deadline empty and not marked intentionally blank",
+      status:
+        !body.deadline && !body.deadlineIntentionallyBlank
+          ? "OPEN"
+          : "CLEARED",
+      message:
+        !body.deadline && !body.deadlineIntentionallyBlank
+          ? "Deadline is blank and not marked intentionally blank."
+          : "Deadline supplied or intentionally blank.",
+    },
+    {
+      id: "S5",
+      condition: "Party missing name, address, or capacity",
+      status: "MODEL CHECK REQUIRED",
+      message:
+        "Evaluate whether any current party is missing name, address, or capacity.",
+    },
+    {
+      id: "S6",
+      condition: "No attorney instruction found in Raw Materials",
+      status: hasAttorneyInstruction ? "CLEARED" : "OPEN",
+      message: hasAttorneyInstruction
+        ? "ATTORNEY INSTRUCTION section found."
+        : "No ATTORNEY INSTRUCTION section found.",
+    },
+    {
+      id: "S7",
+      condition: "Draft not confirmed attorney-approved for external delivery",
+      status: "OPEN",
+      message: "Draft not confirmed attorney-approved for external delivery.",
+    },
+    {
+      id: "S8",
+      condition: "Equity or membership-interest language appears",
+      status: equityLanguageHits.length > 0 ? "OPEN" : "CLEARED",
+      message:
+        equityLanguageHits.length > 0
+          ? equityLanguageHits.join(", ")
+          : "No equity or membership-interest language found.",
+    },
+  ];
+}
 
-  checks.push(
-    `S2 MODEL CHECK REQUIRED — Evaluate whether any source caption/title parties differ from body parties.`
+function buildDraftResponse(stopConditions: StopCondition[]): string {
+  const doNotSendStops = stopConditions.filter(
+    (stop) =>
+      stop.status === "OPEN" && (stop.id === "S1" || stop.id === "S7")
   );
 
-  if (unresolvedDealTerms.length > 0) {
-    checks.push(
-      `S3 OPEN — Deal terms with Unknown or Inherited provenance: ${unresolvedDealTerms
-        .map((row) => `${row.term} (${row.provenance})`)
-        .join(", ")}`
-    );
-  } else {
-    checks.push(`S3 CLEARED — No deal terms marked Unknown or Inherited.`);
+  if (doNotSendStops.length === 0) {
+    return "Not produced — external response generation is disabled in this workflow.";
   }
 
-  if (!body.deadline && !body.deadlineIntentionallyBlank) {
-    checks.push(
-      `S4 OPEN — Deadline is blank and not marked intentionally blank.`
-    );
-  } else {
-    checks.push(`S4 CLEARED — Deadline supplied or intentionally blank.`);
-  }
+  const reason = doNotSendStops
+    .map((stop) => `${stop.id} ${stop.message}`)
+    .join("; ");
 
-  checks.push(
-    `S5 MODEL CHECK REQUIRED — Evaluate whether any current party is missing name, address, or capacity.`
+  return `Not produced — ${reason}`;
+}
+
+function buildExecutiveStatus(
+  stopConditions: StopCondition[]
+): ExecutiveStatus {
+  const s1Open = stopConditions.some(
+    (stop) => stop.id === "S1" && stop.status === "OPEN"
+  );
+  const s7Open = stopConditions.some(
+    (stop) => stop.id === "S7" && stop.status === "OPEN"
   );
 
-  if (hasAttorneyInstruction) {
-    checks.push(`S6 CLEARED — ATTORNEY INSTRUCTION section found.`);
-  } else {
-    checks.push(`S6 OPEN — No ATTORNEY INSTRUCTION section found.`);
+  if (s1Open || s7Open) {
+    return {
+      status: "Do Not Send",
+      reason:
+        "Blocked by old-matter residue and/or lack of attorney-approved draft status.",
+    };
   }
 
-  checks.push(
-    `S7 OPEN — Draft not confirmed attorney-approved for external delivery.`
+  const reviewRequired = stopConditions.some(
+    (stop) =>
+      stop.status === "OPEN" || stop.status === "MODEL CHECK REQUIRED"
   );
+
+  if (reviewRequired) {
+    return {
+      status: "Attorney Review Required",
+      reason:
+        "Open or model-check-required workflow items remain before external delivery.",
+    };
+  }
+
+  return {
+    status: "Ready for Attorney Review",
+    reason: "No open deterministic blocks were detected.",
+  };
+}
+
+function buildCriticalBlocks(stopConditions: StopCondition[]): CriticalBlock[] {
+  const blocks: CriticalBlock[] = [];
+
+  stopConditions.forEach((stop) => {
+    if (stop.status !== "OPEN") return;
+
+    if (stop.id === "S1") {
+      blocks.push({
+        id: "S1",
+        issue: `Old-matter residue in current draft: ${stop.message}`,
+        impact: "Do Not Send.",
+        owner: "Internal cleanup and attorney review before external use.",
+      });
+    }
+
+    if (stop.id === "S7") {
+      blocks.push({
+        id: "S7",
+        issue: "Draft is not confirmed attorney-approved for external delivery.",
+        impact: "Do Not Send.",
+        owner: "Attorney approval required before any external delivery.",
+      });
+    }
+  });
+
+  return blocks;
+}
+
+function partyRows(partyInfo: string): string[][] {
+  return splitLines(partyInfo)
+    .filter((line) => !/^name\s*\|/i.test(line))
+    .map((line) => line.split("|").map((part) => part.trim()))
+    .filter((parts) => parts[0]);
+}
+
+function isEntityType(value: string): boolean {
+  return /entity|llc|company|corporation|corp|法人/i.test(value);
+}
+
+function isIndividualType(value: string): boolean {
+  return /individual|person|natural person|個人/i.test(value);
+}
+
+function partyNamesByType(
+  partyInfo: string,
+  predicate: (value: string) => boolean
+): string[] {
+  return partyRows(partyInfo)
+    .filter((parts) => predicate(parts[1] || ""))
+    .map((parts) => parts[0])
+    .filter(Boolean);
+}
+
+function buildMatterSnapshot(body: RequestBody): MatterSnapshot {
+  return {
+    currentEntities: partyNamesByType(body.partyInfo, isEntityType),
+    currentIndividuals: partyNamesByType(body.partyInfo, isIndividualType),
+    selectedWorkflows: body.matterTypes,
+    dealTerms: parseDealTerms(body.dealTerms),
+  };
+}
+
+function buildConfirmationNeeded(args: {
+  stopConditions: StopCondition[];
+  unresolvedDealTerms: DealTermRow[];
+  equityLanguageHits: string[];
+}): ConfirmationItem[] {
+  const { stopConditions, unresolvedDealTerms, equityLanguageHits } = args;
+  const items: ConfirmationItem[] = [];
+
+  const s2 = stopConditions.find((stop) => stop.id === "S2");
+  const s4 = stopConditions.find((stop) => stop.id === "S4");
+  const s5 = stopConditions.find((stop) => stop.id === "S5");
+
+  if (s4?.status === "OPEN") {
+    items.push({
+      item: "Deadline",
+      owner: "Client Follow-Up",
+      source: "S4 OPEN",
+    });
+  }
+
+  if (s2?.status === "MODEL CHECK REQUIRED") {
+    items.push({
+      item: "Caption/body party consistency",
+      owner: "Internal Cross-Check",
+      source: "S2 MODEL CHECK REQUIRED",
+    });
+  }
+
+  if (s5?.status === "MODEL CHECK REQUIRED") {
+    items.push({
+      item: "Party name/address/capacity completeness",
+      owner: "Internal Cross-Check",
+      source: "S5 MODEL CHECK REQUIRED",
+    });
+  }
+
+  unresolvedDealTerms.forEach((row) => {
+    items.push({
+      item: `${row.term} provenance`,
+      owner: "Attorney Review",
+      source: `S3 OPEN — ${row.provenance || "blank"}`,
+    });
+  });
 
   if (equityLanguageHits.length > 0) {
-    checks.push(
-      `S8 OPEN — Equity or membership-interest language found: ${equityLanguageHits.join(
-        ", "
-      )}`
-    );
-  } else {
-    checks.push(
-      `S8 CLEARED — No equity or membership-interest language found.`
-    );
+    items.push({
+      item: "Equity or membership-interest language",
+      owner: "Attorney Review",
+      source: `S8 OPEN — ${equityLanguageHits.join(", ")}`,
+    });
   }
 
-  return checks.join("\n");
+  return items;
 }
 
-function buildUserMessage(
+function buildAttorneyDecisionCards(args: {
+  stopConditions: StopCondition[];
+  unresolvedDealTerms: DealTermRow[];
+  equityLanguageHits: string[];
+}): AttorneyDecisionCard[] {
+  const { stopConditions, unresolvedDealTerms, equityLanguageHits } = args;
+  const cards: AttorneyDecisionCard[] = [];
+
+  const s4Open = stopConditions.some(
+    (stop) => stop.id === "S4" && stop.status === "OPEN"
+  );
+
+  if (s4Open) {
+    cards.push({
+      issue: "Deadline handling",
+      whyItMatters:
+        "The draft contains a blank deadline, and the application has not been told that the blank is intentional.",
+      decisionNeeded:
+        "Confirm whether the deadline should be supplied now, held pending client follow-up, or intentionally left blank with attorney approval.",
+      evidence: "S4 OPEN — Deadline is blank and not marked intentionally blank.",
+      routing: "Human Confirmation Required",
+    });
+  }
+
+  unresolvedDealTerms.forEach((row) => {
+    cards.push({
+      issue: `Deal-term provenance: ${row.term}`,
+      whyItMatters:
+        "Praxis cannot treat this term as confirmed because its provenance is unresolved.",
+      decisionNeeded:
+        "Confirm whether this term should be used as stated, held pending confirmation, or routed for attorney drafting review.",
+      evidence: `${row.term} = ${row.value}; Provenance = ${
+        row.provenance || "blank"
+      }.`,
+      routing: "Attorney Review",
+    });
+  });
+
+  if (equityLanguageHits.length > 0) {
+    cards.push({
+      issue: "Membership-certificate / ownership-interest-adjacent language",
+      whyItMatters:
+        "This language may fall outside a standard NDA-only preparation workflow and may require separate attorney routing.",
+      decisionNeeded:
+        "Should this be treated as ordinary return-of-property language, or routed as an equity / ownership-interest issue outside the standard NDA workflow?",
+      evidence: equityLanguageHits.join(", "),
+      routing: "Attorney Review",
+    });
+  }
+
+  return cards;
+}
+
+function buildParalegalWorkQueue(args: {
+  stopConditions: StopCondition[];
+  oldMatterHits: string[];
+  unresolvedDealTerms: DealTermRow[];
+}): ParalegalWorkItem[] {
+  const { stopConditions, oldMatterHits, unresolvedDealTerms } = args;
+  const items: ParalegalWorkItem[] = [];
+
+  const s1Open = stopConditions.some(
+    (stop) => stop.id === "S1" && stop.status === "OPEN"
+  );
+  const s7Open = stopConditions.some(
+    (stop) => stop.id === "S7" && stop.status === "OPEN"
+  );
+  const s2NeedsCheck = stopConditions.some(
+    (stop) => stop.id === "S2" && stop.status === "MODEL CHECK REQUIRED"
+  );
+  const s4Open = stopConditions.some(
+    (stop) => stop.id === "S4" && stop.status === "OPEN"
+  );
+  const s5NeedsCheck = stopConditions.some(
+    (stop) => stop.id === "S5" && stop.status === "MODEL CHECK REQUIRED"
+  );
+
+  if (s1Open) {
+    items.push({
+      task: `Quarantine the current draft and identify old/excluded term locations: ${oldMatterHits.join(
+        ", "
+      )}.`,
+      owner: "Internal QA",
+      priority: "Critical",
+    });
+  }
+
+  if (s7Open) {
+    items.push({
+      task: "Confirm attorney-approved draft status before any external delivery.",
+      owner: "Attorney",
+      priority: "Critical",
+    });
+  }
+
+  if (s2NeedsCheck) {
+    items.push({
+      task: "Run caption/title versus body party consistency check.",
+      owner: "Paralegal",
+      priority: "High",
+    });
+  }
+
+  if (s5NeedsCheck) {
+    items.push({
+      task: "Run party name, address, capacity, signer, and initials completeness check.",
+      owner: "Paralegal",
+      priority: "High",
+    });
+  }
+
+  if (s4Open) {
+    items.push({
+      task: "Confirm deadline status with the appropriate owner before external delivery.",
+      owner: "Paralegal",
+      priority: "High",
+    });
+  }
+
+  if (unresolvedDealTerms.length > 0) {
+    items.push({
+      task: `Prepare unresolved deal-term provenance list for attorney review: ${unresolvedDealTerms
+        .map((row) => `${row.term} (${row.provenance || "blank"})`)
+        .join(", ")}.`,
+      owner: "Paralegal",
+      priority: "High",
+    });
+  }
+
+  return items;
+}
+
+function buildWatchlistSummary(
+  oldMatterTerms: string[],
+  oldMatterHits: string[]
+): WatchlistSummary {
+  return {
+    totalChecked: oldMatterTerms.length,
+    detected: oldMatterHits,
+    clearCount: Math.max(oldMatterTerms.length - oldMatterHits.length, 0),
+  };
+}
+
+function buildDefaultSourceDocuments(
   body: RequestBody,
-  deterministicStopChecks: string
-): string {
+  oldMatterHits: string[]
+): SourceDocument[] {
+  const docs: SourceDocument[] = [];
+
+  parseRawSections(body.rawMaterials).forEach((section) => {
+    docs.push({
+      document: sectionDocumentName(section.heading),
+      internalDate: "",
+      label: sectionLabel(section.heading),
+      evidence: excerpt(section.content),
+    });
+  });
+
+  if (docs.length === 0 && body.rawMaterials.trim()) {
+    docs.push({
+      document: "Raw Materials",
+      internalDate: "",
+      label: "REFERENCE",
+      evidence: "Provided by user.",
+    });
+  }
+
+  if (body.dealTerms.trim()) {
+    docs.push({
+      document: "Deal Terms",
+      internalDate: "",
+      label: "REFERENCE",
+      evidence: "Provided by user.",
+    });
+  }
+
+  if (body.currentDraft.trim()) {
+    docs.push({
+      document: "Current Draft",
+      internalDate: "",
+      label: oldMatterHits.length > 0 ? "QUARANTINED" : "UNKNOWN",
+      evidence:
+        oldMatterHits.length > 0
+          ? "Contains old/excluded matter residue."
+          : "Provided by user.",
+    });
+  }
+
+  return dedupeSourceDocuments(docs).slice(0, 8);
+}
+
+function dedupeSourceDocuments(docs: SourceDocument[]): SourceDocument[] {
+  const seen = new Set<string>();
+
+  return docs.filter((doc) => {
+    const key = normalizeText(`${doc.document} ${doc.label} ${doc.evidence}`);
+
+    if (seen.has(key)) return false;
+
+    seen.add(key);
+    return true;
+  });
+}
+
+function buildMatterTitle(body: RequestBody): string {
+  if (body.matterTypes.includes("Mutual release + NDA")) {
+    return "Mutual release + NDA";
+  }
+
+  return body.matterTypes[0] || body.mode || "Attorney Review";
+}
+
+function buildEscalationMemo(args: {
+  body: RequestBody;
+  stopConditions: StopCondition[];
+  oldMatterHits: string[];
+  oldMatterTerms: string[];
+  unresolvedDealTerms: DealTermRow[];
+  equityLanguageHits: string[];
+}): EscalationMemoOutput {
+  const {
+    body,
+    stopConditions,
+    oldMatterHits,
+    oldMatterTerms,
+    unresolvedDealTerms,
+    equityLanguageHits,
+  } = args;
+
+  const sourceDocuments = buildDefaultSourceDocuments(body, oldMatterHits);
+
+  return {
+    matterTitle: buildMatterTitle(body),
+    executiveStatus: buildExecutiveStatus(stopConditions),
+    criticalBlocks: buildCriticalBlocks(stopConditions),
+    matterSnapshot: buildMatterSnapshot(body),
+    confirmationNeeded: buildConfirmationNeeded({
+      stopConditions,
+      unresolvedDealTerms,
+      equityLanguageHits,
+    }),
+    attorneyDecisionCards: buildAttorneyDecisionCards({
+      stopConditions,
+      unresolvedDealTerms,
+      equityLanguageHits,
+    }),
+    paralegalWorkQueue: buildParalegalWorkQueue({
+      stopConditions,
+      oldMatterHits,
+      unresolvedDealTerms,
+    }),
+    watchlistSummary: buildWatchlistSummary(oldMatterTerms, oldMatterHits),
+    draftResponse: buildDraftResponse(stopConditions),
+    sourceDocuments,
+    internalStopConditions: stopConditions,
+  };
+}
+
+function escapeTable(value: string): string {
+  return (value || "").replace(/\|/g, "\\|").replace(/\n/g, " ");
+}
+
+function renderExecutiveStatus(status: ExecutiveStatus): string[] {
   return [
-    `MATTER TYPES: ${body.matterTypes.join("; ")}`,
+    `**Status:** ${status.status}`,
     ``,
-    `REVIEWER TYPE: ${body.reviewerType}`,
-    ``,
-    `DEADLINE: ${body.deadline || "(blank)"}`,
-    `DEADLINE INTENTIONALLY BLANK (confirmed): ${
-      body.deadlineIntentionallyBlank ? "Yes" : "No"
+    `**Reason:** ${status.reason}`,
+  ];
+}
+
+function renderCriticalBlocks(blocks: CriticalBlock[]): string[] {
+  if (blocks.length === 0) return ["- None."];
+
+  return blocks.flatMap((block) => [
+    `- **${block.id} — ${block.issue}**`,
+    `  - Impact: ${block.impact}`,
+    `  - Owner: ${block.owner}`,
+  ]);
+}
+
+function renderMatterSnapshot(snapshot: MatterSnapshot): string[] {
+  const lines: string[] = [];
+
+  lines.push(
+    `- Current entity parties: ${
+      snapshot.currentEntities.length
+        ? snapshot.currentEntities.join("; ")
+        : "None identified."
+    }`
+  );
+
+  lines.push(
+    `- Current individual parties/signers: ${
+      snapshot.currentIndividuals.length
+        ? snapshot.currentIndividuals.join("; ")
+        : "None identified."
+    }`
+  );
+
+  lines.push(
+    `- Selected workflows: ${
+      snapshot.selectedWorkflows.length
+        ? snapshot.selectedWorkflows.join("; ")
+        : "None selected."
+    }`
+  );
+
+  if (snapshot.dealTerms.length > 0) {
+    snapshot.dealTerms.forEach((row) => {
+      lines.push(
+        `- Deal term: ${row.term || "(blank term)"} = ${
+          row.value || "(blank value)"
+        }; Provenance = ${row.provenance || "blank"}`
+      );
+    });
+  } else {
+    lines.push("- Deal terms: None identified.");
+  }
+
+  return lines;
+}
+
+function renderConfirmationNeeded(items: ConfirmationItem[]): string[] {
+  if (items.length === 0) return ["- None."];
+
+  return items.map(
+    (item) => `- ${item.item} — ${item.owner} — ${item.source}`
+  );
+}
+
+function renderAttorneyDecisionCards(cards: AttorneyDecisionCard[]): string[] {
+  if (cards.length === 0) return ["1. None."];
+
+  return cards.flatMap((card, index) => [
+    `${index + 1}. **${card.issue}**`,
+    `   - Why it matters: ${card.whyItMatters}`,
+    `   - Decision needed: ${card.decisionNeeded}`,
+    `   - Evidence: ${card.evidence}`,
+    `   - Routing: ${card.routing}`,
+  ]);
+}
+
+function renderParalegalWorkQueue(items: ParalegalWorkItem[]): string[] {
+  if (items.length === 0) return ["- None."];
+
+  return items.map(
+    (item) => `- [${item.priority}] ${item.task} — Owner: ${item.owner}`
+  );
+}
+
+function renderWatchlistSummary(summary: WatchlistSummary): string[] {
+  return [
+    `- Old/excluded terms checked: ${summary.totalChecked}`,
+    `- Detected in current draft: ${
+      summary.detected.length ? summary.detected.join(", ") : "None"
     }`,
+    `- Clear: ${summary.clearCount}`,
+  ];
+}
+
+function renderSourceDocuments(docs: SourceDocument[]): string[] {
+  if (docs.length === 0) return ["- None."];
+
+  return [
+    `| Document | Internal date | Label | Evidence |`,
+    `|---|---|---|---|`,
+    ...docs.map(
+      (doc) =>
+        `| ${escapeTable(doc.document)} | ${escapeTable(
+          doc.internalDate || "(blank)"
+        )} | ${escapeTable(doc.label)} | ${escapeTable(doc.evidence)} |`
+    ),
+  ];
+}
+
+function renderStopConditions(stops: StopCondition[]): string[] {
+  return stops.map(
+    (stop) =>
+      `- ${stop.id} ${stop.condition} — ${stop.status} — ${stop.message}`
+  );
+}
+
+function renderEscalationMemo(memo: EscalationMemoOutput): string {
+  return [
+    `# Praxis Attorney Escalation Memo — ${memo.matterTitle}`,
     ``,
-    `DETERMINISTIC STOP CHECKS:`,
-    deterministicStopChecks,
+    `## 1. Executive Status`,
+    ...renderExecutiveStatus(memo.executiveStatus),
     ``,
-    `OLD / EXCLUDED NAMES AND TERMS:`,
-    body.oldMatterTerms || "(none provided)",
+    `## 2. Critical Blocks`,
+    ...renderCriticalBlocks(memo.criticalBlocks),
     ``,
-    `APPLICATION-LEVEL SOURCE OF TRUTH RULES:`,
-    `- Current parties may only come from PARTY INFORMATION.`,
-    `- Items in OLD / EXCLUDED NAMES AND TERMS are never current parties, never current facts, and never missing party information.`,
-    `- Excluded items may appear only under Stop Conditions, Branches Triggered, Admin / Paralegal Fixes, or Items Not Touched.`,
-    `- Key Facts must include only current-matter facts from Party Information, Deal Terms, Client Email, or Attorney Instruction.`,
-    `- Key Facts must not include legal clause-review issues such as jurisdiction, forum, fee-shifting, release scope, non-compete, drafting voice, remedy language, or venue language.`,
-    `- Do not convert Unknown or Inherited provenance into Known. Ask for confirmation instead.`,
-    `- If deadline is blank and DEADLINE INTENTIONALLY BLANK is No, do not say the deadline was intentionally left blank.`,
-    `- Branches Triggered must include only triggered branches. Do not include none, N/A, or inactive branches.`,
+    `## 3. Matter Snapshot`,
+    ...renderMatterSnapshot(memo.matterSnapshot),
     ``,
-    `PARTY INFORMATION (pipe table — Name | Type | Capacity | Address | Signer | Initials):`,
-    body.partyInfo,
+    `## 4. Confirmation Needed`,
+    ...renderConfirmationNeeded(memo.confirmationNeeded),
     ``,
-    `DEAL TERMS (pipe table — Term | Value | Provenance):`,
-    body.dealTerms,
+    `## 5. Attorney Decision Cards`,
+    ...renderAttorneyDecisionCards(memo.attorneyDecisionCards),
     ``,
-    `RAW MATERIALS:`,
-    body.rawMaterials,
+    `## 6. Paralegal Work Queue`,
+    ...renderParalegalWorkQueue(memo.paralegalWorkQueue),
     ``,
-    `CURRENT DRAFT:`,
-    body.currentDraft?.trim() ? body.currentDraft : "(none provided)",
+    `## 7. Watchlist Summary`,
+    ...renderWatchlistSummary(memo.watchlistSummary),
     ``,
-    `HUMAN PROCESS NOTES:`,
-    body.processNotes?.trim() ? body.processNotes : "(none collected yet)",
+    `## 8. Draft Response`,
+    memo.draftResponse,
     ``,
-    OUTPUT_SKELETON,
+    `## Appendix A. Source Documents`,
+    ...renderSourceDocuments(memo.sourceDocuments),
+    ``,
+    `## Appendix B. Internal Stop Conditions`,
+    ...renderStopConditions(memo.internalStopConditions),
   ].join("\n");
 }
 
-function enforceDoNotSend(output: string, oldMatterHits: string[]): string {
-  if (oldMatterHits.length === 0) return output;
-
-  const reason = `S1 old/excluded matter term remains in current draft: ${oldMatterHits.join(
-    ", "
-  )}`;
-
-  if (output.includes("## Draft Response")) {
-    return output.replace(
-      /## Draft Response[\s\S]*$/i,
-      `## Draft Response\nNot produced — ${reason}`
-    );
-  }
-
-  return `${output}\n\n## Draft Response\nNot produced — ${reason}`;
-}
-
-function polishUnsafeOutput(output: string): string {
-  let polished = output;
-
-  polished = polished.replace(
-    /- Update the non-compete radius to a specific value.*$/gim,
-    "- Non-compete radius provenance is Unknown — confirm before use — [Attorney Review]"
-  );
-
-  polished = polished.replace(
-    /- Update the non-compete radius provenance to Known.*$/gim,
-    "- Non-compete radius provenance is Unknown — confirm before use — [Attorney Review]"
-  );
-
-  polished = polished.replace(
-    /- Update the payment amount to \$50.*$/gim,
-    "- Payment amount should be cross-checked against Deal Terms before attorney review — [Paralegal Review]"
-  );
-
-  polished = polished.replace(
-    /- Update the exchange window.*$/gim,
-    "- Exchange window provenance is Inherited — confirm before use — [Paralegal Review]"
-  );
-
-  polished = polished.replace(/- AXION appears.*$/gim, "");
-
-  polished = polished.replace(
-    /- HALL appears.*$/gim,
-    "- HALL appears in Current Draft — old/excluded matter residue — [Do Not Send]"
-  );
-
-  return polished;
-}
-
-function enforceImmediateNextAction(
-  output: string,
-  oldMatterHits: string[],
-  unresolvedDealTerms: DealTermRow[]
-): string {
-  if (oldMatterHits.length === 0 && unresolvedDealTerms.length === 0) {
-    return output;
-  }
-
-  const reasonParts: string[] = [];
-
-  if (oldMatterHits.length > 0) {
-    reasonParts.push("old-matter residue");
-  }
-
-  if (unresolvedDealTerms.length > 0) {
-    reasonParts.push("unresolved deal-term provenance");
-  }
-
-  const nextAction = `Do not send. Resolve ${reasonParts.join(
-    " and "
-  )} before deadline follow-up or further drafting.`;
-
-  if (output.includes("## Immediate Next Action")) {
-    return output.replace(
-      /## Immediate Next Action[\s\S]*?(?=\n## Draft Response|$)/i,
-      `## Immediate Next Action\n${nextAction}\n`
-    );
-  }
-
-  return `${output}\n\n## Immediate Next Action\n${nextAction}`;
-}
-
-function dedupeBulletLines(output: string): string {
-  const lines = output.split("\n");
-  const seen = new Set<string>();
-
-  return lines
-    .filter((line) => {
-      if (!line.trim().startsWith("- ")) return true;
-
-      const normalized = line.trim().toLowerCase();
-
-      if (seen.has(normalized)) return false;
-
-      seen.add(normalized);
-      return true;
-    })
-    .join("\n");
-}
-
 export async function POST(request: Request) {
-  if (!process.env.GROQ_API_KEY) {
-    return NextResponse.json(
-      {
-        error:
-          "GROQ_API_KEY is missing. Check .env.local and restart npm run dev.",
-      },
-      { status: 500 }
-    );
-  }
-
   let body: RequestBody;
 
   try {
@@ -549,19 +1025,6 @@ export async function POST(request: Request) {
     );
   }
 
-  const systemPrompt = PROMPTS[body.mode];
-
-  if (!systemPrompt) {
-    return NextResponse.json(
-      {
-        error: `Unknown workflow mode: "${body.mode}". Valid modes: ${Object.keys(
-          PROMPTS
-        ).join(", ")}`,
-      },
-      { status: 400 }
-    );
-  }
-
   body.currentDraft =
     typeof body.currentDraft === "string" ? body.currentDraft : "";
 
@@ -582,60 +1045,32 @@ export async function POST(request: Request) {
     body.oldMatterTerms
   );
 
+  const oldMatterTerms = splitLines(body.oldMatterTerms);
+
   const unresolvedDealTerms = findUnresolvedDealTerms(body.dealTerms);
 
   const hasAttorneyInstruction = detectAttorneyInstruction(body.rawMaterials);
 
   const equityLanguageHits = findEquityLanguageHits(body);
 
-  const deterministicStopChecks = buildDeterministicStopChecks(
+  const stopConditions = buildStopConditions({
     body,
     oldMatterHits,
     unresolvedDealTerms,
     hasAttorneyInstruction,
-    equityLanguageHits
-  );
+    equityLanguageHits,
+  });
 
-  try {
-    const completion = await groq.chat.completions.create({
-      model: MODEL,
-      temperature: 0.2,
-      max_tokens: 2200,
-      messages: [
-        { role: "system", content: systemPrompt },
-        {
-          role: "user",
-          content: buildUserMessage(body, deterministicStopChecks),
-        },
-      ],
-    });
+  const memo = buildEscalationMemo({
+    body,
+    stopConditions,
+    oldMatterHits,
+    oldMatterTerms,
+    unresolvedDealTerms,
+    equityLanguageHits,
+  });
 
-    const rawOutput = completion.choices?.[0]?.message?.content ?? "";
+  const output = renderEscalationMemo(memo);
 
-    if (!rawOutput.trim()) {
-      return NextResponse.json(
-        { error: "Model returned an empty response. Try again." },
-        { status: 502 }
-      );
-    }
-
-    const nextActionOutput = enforceImmediateNextAction(
-      rawOutput,
-      oldMatterHits,
-      unresolvedDealTerms
-    );
-    const polishedOutput = polishUnsafeOutput(nextActionOutput);
-    const dedupedOutput = dedupeBulletLines(polishedOutput);
-    const output = enforceDoNotSend(dedupedOutput, oldMatterHits);
-
-    return NextResponse.json({ output });
-  } catch (error) {
-    const message =
-      error instanceof Error ? error.message : "Unknown Groq API error";
-
-    return NextResponse.json(
-      { error: `Groq API error: ${message}` },
-      { status: 502 }
-    );
-  }
+  return NextResponse.json({ output });
 }

@@ -18,9 +18,9 @@ const RISK_FLAGS = [
 ];
 
 const PARTY_TEMPLATE = `Name | Type | Capacity | Address | Signer | Initials
-AXION STUDIOS, LLC | Entity | — | 14105 Carissa Meadows Ct, Riverview, FL 33569 | Zane Campbell (AMBR) | A.S.
+AXION STUDIOS, LLC | Entity | Entity party | 14105 Carissa Meadows Ct, Riverview, FL 33569 | Zane Campbell (AMBR) | A.S.
 ZANE CAMPBELL | Individual | individually and as Manager of AXION | same as above | self | Z.C.
-FRAMEHOUSE LLC | Entity | — | 189 Lexington Avenue, Dumont, NJ 07628 | Michaela Permuy (AMBR) | F.H.
+FRAMEHOUSE LLC | Entity | Entity party | 189 Lexington Avenue, Dumont, NJ 07628 | Michaela Permuy (AMBR) | F.H.
 MICHAELA PERMUY | Individual | individually and as Manager of FRAMEHOUSE | same as above | self | M.P.
 DUSTYN BIELSKI | Individual | individually and as Manager of FRAMEHOUSE | same as above | self | D.B.`;
 
@@ -66,6 +66,19 @@ type FormState = {
   attorneyApprovedForExternalDelivery: boolean;
   captionBodyConsistencyChecked: boolean;
   equityIssueRoutedToAttorney: boolean;
+};
+
+type ApiIssue = {
+  field: string;
+  line: number;
+  message: string;
+  value: string;
+};
+
+type ApiResponse = {
+  output?: string;
+  error?: string;
+  issues?: ApiIssue[];
 };
 
 const PACKAGE_COPY: Record<
@@ -239,6 +252,32 @@ function requiredMark() {
   return <span style={{ color: "#f87171" }}> *</span>;
 }
 
+function formatApiError(data: ApiResponse, status: number): string {
+  const lines: string[] = [
+    data.error || `Request failed with status ${status}`,
+  ];
+
+  if (Array.isArray(data.issues) && data.issues.length > 0) {
+    lines.push("");
+    lines.push("Fix the following input issue(s):");
+
+    data.issues.forEach((issue, index) => {
+      const location =
+        issue.line > 0
+          ? `${issue.field} line ${issue.line}`
+          : `${issue.field}`;
+
+      lines.push(`${index + 1}. ${location}: ${issue.message}`);
+
+      if (issue.value) {
+        lines.push(`   Value: ${issue.value}`);
+      }
+    });
+  }
+
+  return lines.join("\n");
+}
+
 export default function Home() {
   const [form, setForm] = useState<FormState>(initialForm);
   const [activePreset, setActivePreset] = useState<Preset>("firstPass");
@@ -331,10 +370,10 @@ export default function Home() {
 
       const text = await res.text();
 
-      let data: { output?: string; error?: string };
+      let data: ApiResponse;
 
       try {
-        data = JSON.parse(text);
+        data = JSON.parse(text) as ApiResponse;
       } catch {
         throw new Error(
           `Server returned non-JSON response (status ${res.status}): ${text.slice(
@@ -345,7 +384,7 @@ export default function Home() {
       }
 
       if (!res.ok) {
-        throw new Error(data.error || `Request failed with status ${res.status}`);
+        throw new Error(formatApiError(data, res.status));
       }
 
       setOutput(data.output || "(empty response)");
@@ -724,8 +763,8 @@ export default function Home() {
 
               <label style={labelStyle}>Human Process Notes</label>
               <div style={hintStyle}>
-                Optional internal notes. These should be included in the memo
-                once the backend is wired to render process notes.
+                Optional internal notes. These notes are included in the
+                attorney-review memo for workflow context.
               </div>
               <textarea
                 style={textareaStyle}

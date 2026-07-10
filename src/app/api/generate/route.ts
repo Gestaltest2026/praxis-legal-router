@@ -213,6 +213,30 @@ function normalizeText(value: string): string {
     .toLowerCase();
 }
 
+function isPlaceholderValue(value: string): boolean {
+  const normalized = normalizeText(value);
+
+  return [
+    "-",
+    "—",
+    "–",
+    "tbd",
+    "n/a",
+    "na",
+    "unknown",
+    "unclear",
+    "to be confirmed",
+    "needs confirmation",
+    "pending confirmation",
+    "not confirmed",
+    "要確認",
+    "不明",
+    "未確認",
+    "未定",
+    "確認中",
+  ].includes(normalized);
+}
+
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
@@ -321,6 +345,36 @@ function isIndividualType(value: string): boolean {
   return /individual|person|natural person|個人/i.test(value);
 }
 
+function validateRequiredPartyCell(args: {
+  issues: ValidationIssue[];
+  lineNumber: number;
+  rowLine: string;
+  columnName: string;
+  value: string;
+}) {
+  const { issues, lineNumber, rowLine, columnName, value } = args;
+
+  if (!value) {
+    issues.push({
+      field: "partyInfo",
+      line: lineNumber,
+      message: `Party Information row is missing ${columnName}.`,
+      value: rowLine,
+    });
+
+    return;
+  }
+
+  if (isPlaceholderValue(value)) {
+    issues.push({
+      field: "partyInfo",
+      line: lineNumber,
+      message: `Party Information row has placeholder ${columnName}.`,
+      value: rowLine,
+    });
+  }
+}
+
 function validatePartyInfoTable(partyInfo: string): ValidationIssue[] {
   const issues: ValidationIssue[] = [];
   const lines = splitLines(partyInfo);
@@ -358,23 +412,23 @@ function validatePartyInfoTable(partyInfo: string): ValidationIssue[] {
 
     const [name, type, capacity, address, signer, initials] = parts;
 
-    if (!name) {
-      issues.push({
-        field: "partyInfo",
-        line: row.lineNumber,
-        message: "Party Information row is missing Name.",
-        value: row.line,
-      });
-    }
+    validateRequiredPartyCell({
+      issues,
+      lineNumber: row.lineNumber,
+      rowLine: row.line,
+      columnName: "Name",
+      value: name,
+    });
 
-    if (!type) {
-      issues.push({
-        field: "partyInfo",
-        line: row.lineNumber,
-        message: "Party Information row is missing Type.",
-        value: row.line,
-      });
-    } else if (!isEntityType(type) && !isIndividualType(type)) {
+    validateRequiredPartyCell({
+      issues,
+      lineNumber: row.lineNumber,
+      rowLine: row.line,
+      columnName: "Type",
+      value: type,
+    });
+
+    if (type && !isPlaceholderValue(type) && !isEntityType(type) && !isIndividualType(type)) {
       issues.push({
         field: "partyInfo",
         line: row.lineNumber,
@@ -384,41 +438,37 @@ function validatePartyInfoTable(partyInfo: string): ValidationIssue[] {
       });
     }
 
-    if (!capacity) {
-      issues.push({
-        field: "partyInfo",
-        line: row.lineNumber,
-        message: "Party Information row is missing Capacity.",
-        value: row.line,
-      });
-    }
+    validateRequiredPartyCell({
+      issues,
+      lineNumber: row.lineNumber,
+      rowLine: row.line,
+      columnName: "Capacity",
+      value: capacity,
+    });
 
-    if (!address) {
-      issues.push({
-        field: "partyInfo",
-        line: row.lineNumber,
-        message: "Party Information row is missing Address.",
-        value: row.line,
-      });
-    }
+    validateRequiredPartyCell({
+      issues,
+      lineNumber: row.lineNumber,
+      rowLine: row.line,
+      columnName: "Address",
+      value: address,
+    });
 
-    if (!signer) {
-      issues.push({
-        field: "partyInfo",
-        line: row.lineNumber,
-        message: "Party Information row is missing Signer.",
-        value: row.line,
-      });
-    }
+    validateRequiredPartyCell({
+      issues,
+      lineNumber: row.lineNumber,
+      rowLine: row.line,
+      columnName: "Signer",
+      value: signer,
+    });
 
-    if (!initials) {
-      issues.push({
-        field: "partyInfo",
-        line: row.lineNumber,
-        message: "Party Information row is missing Initials.",
-        value: row.line,
-      });
-    }
+    validateRequiredPartyCell({
+      issues,
+      lineNumber: row.lineNumber,
+      rowLine: row.line,
+      columnName: "Initials",
+      value: initials,
+    });
   });
 
   return issues;
@@ -735,7 +785,7 @@ function buildStopConditions(args: {
       condition: "Party missing name, address, capacity, signer, or initials",
       status: "CLEARED",
       message:
-        "Party Information table passed deterministic validation for required columns and non-empty cells.",
+        "Party Information table passed deterministic validation for required columns, non-empty cells, and non-placeholder required values.",
     },
     {
       id: "S6",

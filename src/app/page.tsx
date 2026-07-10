@@ -69,6 +69,7 @@ type FormState = {
   deadline: string;
   deadlineIntentionallyBlank: boolean;
   reviewerType: string;
+  attorneyApprovedForExternalDelivery: boolean;
 };
 
 const initialForm: FormState = {
@@ -83,6 +84,7 @@ const initialForm: FormState = {
   deadline: "",
   deadlineIntentionallyBlank: false,
   reviewerType: "Paralegal",
+  attorneyApprovedForExternalDelivery: false,
 };
 
 const labelStyle: React.CSSProperties = {
@@ -168,6 +170,8 @@ export default function Home() {
           deadline: form.deadline,
           deadlineIntentionallyBlank: form.deadlineIntentionallyBlank,
           reviewerType: form.reviewerType,
+          attorneyApprovedForExternalDelivery:
+            form.attorneyApprovedForExternalDelivery,
         }),
       });
 
@@ -219,7 +223,7 @@ export default function Home() {
       }}
     >
       <h1 style={{ fontSize: 26, marginBottom: 4 }}>
-        Praxis v0.2-lite — NDA Preparation
+        Praxis v0.5.3 — NDA Safety Gate
       </h1>
 
       <p style={{ fontSize: 13, color: "#666", marginTop: 0 }}>
@@ -389,6 +393,33 @@ export default function Home() {
         <option value="Paralegal">Paralegal</option>
         <option value="Attorney">Attorney</option>
       </select>
+
+      <label
+        style={{
+          ...labelStyle,
+          fontWeight: 400,
+          fontSize: 13,
+          marginTop: 18,
+          padding: 12,
+          border: "1px solid #d6d6d6",
+          borderRadius: 4,
+          background: "#f8f8f8",
+        }}
+      >
+        <input
+          type="checkbox"
+          checked={form.attorneyApprovedForExternalDelivery}
+          onChange={(e) =>
+            set("attorneyApprovedForExternalDelivery", e.target.checked)
+          }
+          style={{ marginRight: 6 }}
+        />
+        Attorney has approved this draft for external delivery.
+        <div style={{ ...hintStyle, marginTop: 6 }}>
+          This only clears S7. It does not override other open stop conditions
+          or authorize automatic external response generation.
+        </div>
+      </label>
 
       <div style={{ marginTop: 24 }}>
         <button

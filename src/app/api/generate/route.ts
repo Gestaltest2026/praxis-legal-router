@@ -12,6 +12,7 @@ type RequestBody = {
   deadline: string;
   deadlineIntentionallyBlank: boolean;
   reviewerType: string;
+  attorneyApprovedForExternalDelivery: boolean;
 };
 
 type DealTermRow = {
@@ -115,6 +116,13 @@ type RawSection = {
   content: string;
 };
 
+type ValidationIssue = {
+  field: "partyInfo" | "dealTerms";
+  line: number;
+  message: string;
+  value: string;
+};
+
 function splitLines(value: string): string[] {
   return value
     .split(/\r?\n/)
@@ -160,6 +168,183 @@ function findOldMatterHits(
   return splitLines(oldMatterTerms).filter((term) =>
     termToRegex(term).test(normalizedDraft)
   );
+}
+
+function isEntityType(value: string): boolean {
+  return /entity|llc|company|corporation|corp|法人|会社/i.test(value);
+}
+
+function isIndividualType(value: string): boolean {
+  return /individual|person|natural person|個人/i.test(value);
+}
+
+function validatePartyInfoTable(partyInfo: string): ValidationIssue[] {
+  const issues: ValidationIssue[] = [];
+  const lines = splitLines(partyInfo);
+
+  const rows = lines
+    .map((line, index) => ({ line, lineNumber: index + 1 }))
+    .filter((row) => !/^name\s*\|/i.test(row.line));
+
+  if (rows.length === 0) {
+    issues.push({
+      field: "partyInfo",
+      line: 0,
+      message:
+        "Party Information table must include at least one party row after the header.",
+      value: partyInfo,
+    });
+
+    return issues;
+  }
+
+  rows.forEach((row) => {
+    const parts = row.line.split("|").map((part) => part.trim());
+
+    if (parts.length < 6) {
+      issues.push({
+        field: "partyInfo",
+        line: row.lineNumber,
+        message:
+          "Party Information row must have 6 columns: Name | Type | Capacity | Address | Signer | Initials.",
+        value: row.line,
+      });
+
+      return;
+    }
+
+    const [name, type, capacity, address, signer, initials] = parts;
+
+    if (!name) {
+      issues.push({
+        field: "partyInfo",
+        line: row.lineNumber,
+        message: "Party Information row is missing Name.",
+        value: row.line,
+      });
+    }
+
+    if (!type) {
+      issues.push({
+        field: "partyInfo",
+        line: row.lineNumber,
+        message: "Party Information row is missing Type.",
+        value: row.line,
+      });
+    } else if (!isEntityType(type) && !isIndividualType(type)) {
+      issues.push({
+        field: "partyInfo",
+        line: row.lineNumber,
+        message:
+          "Party Type must be recognizable as entity/company/LLC/corporation or individual/person.",
+        value: row.line,
+      });
+    }
+
+    if (!capacity) {
+      issues.push({
+        field: "partyInfo",
+        line: row.lineNumber,
+        message: "Party Information row is missing Capacity.",
+        value: row.line,
+      });
+    }
+
+    if (!address) {
+      issues.push({
+        field: "partyInfo",
+        line: row.lineNumber,
+        message: "Party Information row is missing Address.",
+        value: row.line,
+      });
+    }
+
+    if (!signer) {
+      issues.push({
+        field: "partyInfo",
+        line: row.lineNumber,
+        message: "Party Information row is missing Signer.",
+        value: row.line,
+      });
+    }
+
+    if (!initials) {
+      issues.push({
+        field: "partyInfo",
+        line: row.lineNumber,
+        message: "Party Information row is missing Initials.",
+        value: row.line,
+      });
+    }
+  });
+
+  return issues;
+}
+
+function validateDealTermsTable(dealTerms: string): ValidationIssue[] {
+  const issues: ValidationIssue[] = [];
+  const lines = splitLines(dealTerms);
+
+  const rows = lines
+    .map((line, index) => ({ line, lineNumber: index + 1 }))
+    .filter((row) => !/^term\s*\|/i.test(row.line));
+
+  if (rows.length === 0) {
+    issues.push({
+      field: "dealTerms",
+      line: 0,
+      message:
+        "Deal Terms table must include at least one deal-term row after the header.",
+      value: dealTerms,
+    });
+
+    return issues;
+  }
+
+  rows.forEach((row) => {
+    const parts = row.line.split("|").map((part) => part.trim());
+
+    if (parts.length < 3) {
+      issues.push({
+        field: "dealTerms",
+        line: row.lineNumber,
+        message:
+          "Deal Terms row must have 3 columns: Term | Value | Provenance.",
+        value: row.line,
+      });
+
+      return;
+    }
+
+    const [term, value] = parts;
+
+    if (!term) {
+      issues.push({
+        field: "dealTerms",
+        line: row.lineNumber,
+        message: "Deal Terms row is missing Term.",
+        value: row.line,
+      });
+    }
+
+    if (!value) {
+      issues.push({
+        field: "dealTerms",
+        line: row.lineNumber,
+        message: "Deal Terms row is missing Value.",
+        value: row.line,
+      });
+    }
+  });
+
+  return issues;
+}
+
+function validateStructuredInputs(body: RequestBody): ValidationIssue[] {
+  return [
+    ...validatePartyInfoTable(body.partyInfo),
+    ...validateDealTermsTable(body.dealTerms),
+  ];
 }
 
 function parseDealTerms(dealTerms: string): DealTermRow[] {
@@ -222,7 +407,9 @@ function parseRawSections(rawMaterials: string): RawSection[] {
       const heading = (match[1] || "").trim();
       const start = (match.index || 0) + match[0].length;
       const end =
-        index + 1 < matches.length ? matches[index + 1].index || text.length : text.length;
+        index + 1 < matches.length
+          ? matches[index + 1].index || text.length
+          : text.length;
       const content = text.slice(start, end).trim();
 
       return { heading, content };
@@ -266,7 +453,10 @@ function detectAttorneyInstruction(rawMaterials: string): boolean {
 
   return sections.some((section) => {
     const heading = normalizeText(section.heading);
-    return /attorney|instruction/.test(heading) && section.content.trim().length > 0;
+
+    return (
+      /attorney|instruction/.test(heading) && section.content.trim().length > 0
+    );
   });
 }
 
@@ -358,10 +548,10 @@ function buildStopConditions(args: {
     },
     {
       id: "S5",
-      condition: "Party missing name, address, or capacity",
-      status: "MODEL CHECK REQUIRED",
+      condition: "Party missing name, address, capacity, signer, or initials",
+      status: "CLEARED",
       message:
-        "Evaluate whether any current party is missing name, address, or capacity.",
+        "Party Information table passed deterministic validation for required columns and required values.",
     },
     {
       id: "S6",
@@ -374,8 +564,10 @@ function buildStopConditions(args: {
     {
       id: "S7",
       condition: "Draft not confirmed attorney-approved for external delivery",
-      status: "OPEN",
-      message: "Draft not confirmed attorney-approved for external delivery.",
+      status: body.attorneyApprovedForExternalDelivery ? "CLEARED" : "OPEN",
+      message: body.attorneyApprovedForExternalDelivery
+        ? "Attorney-approved external delivery status confirmed by user input."
+        : "Draft not confirmed attorney-approved for external delivery.",
     },
     {
       id: "S8",
@@ -476,14 +668,6 @@ function partyRows(partyInfo: string): string[][] {
     .filter((line) => !/^name\s*\|/i.test(line))
     .map((line) => line.split("|").map((part) => part.trim()))
     .filter((parts) => parts[0]);
-}
-
-function isEntityType(value: string): boolean {
-  return /entity|llc|company|corporation|corp|法人/i.test(value);
-}
-
-function isIndividualType(value: string): boolean {
-  return /individual|person|natural person|個人/i.test(value);
 }
 
 function partyNamesByType(
@@ -1039,6 +1223,22 @@ export async function POST(request: Request) {
   body.deadline = typeof body.deadline === "string" ? body.deadline : "";
 
   body.deadlineIntentionallyBlank = Boolean(body.deadlineIntentionallyBlank);
+
+  body.attorneyApprovedForExternalDelivery = Boolean(
+    body.attorneyApprovedForExternalDelivery
+  );
+
+  const validationIssues = validateStructuredInputs(body);
+
+  if (validationIssues.length > 0) {
+    return NextResponse.json(
+      {
+        error: "Input validation failed.",
+        issues: validationIssues,
+      },
+      { status: 400 }
+    );
+  }
 
   const oldMatterHits = findOldMatterHits(
     body.currentDraft,

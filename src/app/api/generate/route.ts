@@ -13,6 +13,8 @@ type RequestBody = {
   deadlineIntentionallyBlank: boolean;
   reviewerType: string;
   attorneyApprovedForExternalDelivery: boolean;
+  captionBodyConsistencyChecked: boolean;
+  equityIssueRoutedToAttorney: boolean;
 };
 
 type DealTermRow = {
@@ -363,26 +365,48 @@ function parseDealTerms(dealTerms: string): DealTermRow[] {
     .filter((row) => row.term || row.value || row.provenance);
 }
 
+function isResolvedProvenance(provenance: string): boolean {
+  const value = normalizeText(provenance);
+
+  return [
+    "instructed",
+    "confirmed",
+    "attorney confirmed",
+    "client confirmed",
+    "responsible reviewer confirmed",
+    "drafting instruction",
+    "final instruction",
+  ].includes(value);
+}
+
 function isUnresolvedProvenance(provenance: string): boolean {
   const value = normalizeText(provenance);
 
   if (!value) return true;
 
-  return [
-    "unknown",
-    "inherited",
-    "unclear",
-    "tbd",
-    "to be confirmed",
-    "not confirmed",
-    "needs confirmation",
-    "pending confirmation",
-    "要確認",
-    "不明",
-    "未確認",
-    "未定",
-    "確認中",
-  ].includes(value);
+  if (isResolvedProvenance(value)) return false;
+
+  if (
+    [
+      "unknown",
+      "inherited",
+      "unclear",
+      "tbd",
+      "to be confirmed",
+      "not confirmed",
+      "needs confirmation",
+      "pending confirmation",
+      "要確認",
+      "不明",
+      "未確認",
+      "未定",
+      "確認中",
+    ].includes(value)
+  ) {
+    return true;
+  }
+
+  return true;
 }
 
 function findUnresolvedDealTerms(dealTerms: string): DealTermRow[] {
@@ -500,6 +524,9 @@ function buildStopConditions(args: {
     equityLanguageHits,
   } = args;
 
+  const equityIssueOpen =
+    equityLanguageHits.length > 0 && !body.equityIssueRoutedToAttorney;
+
   return [
     {
       id: "S1",
@@ -513,14 +540,17 @@ function buildStopConditions(args: {
     {
       id: "S2",
       condition: "Source caption/title parties differ from body parties",
-      status: "MODEL CHECK REQUIRED",
-      message:
-        "Evaluate whether any source caption/title parties differ from body parties.",
+      status: body.captionBodyConsistencyChecked
+        ? "CLEARED"
+        : "MODEL CHECK REQUIRED",
+      message: body.captionBodyConsistencyChecked
+        ? "Caption/body party consistency check confirmed by user input."
+        : "Evaluate whether any source caption/title parties differ from body parties.",
     },
     {
       id: "S3",
       condition:
-        "Deal term provenance is Unknown, Inherited, blank, or unresolved",
+        "Deal term provenance is unresolved, unconfirmed, inherited, unknown, or blank",
       status: unresolvedDealTerms.length > 0 ? "OPEN" : "CLEARED",
       message:
         unresolvedDealTerms.length > 0
@@ -536,15 +566,15 @@ function buildStopConditions(args: {
     },
     {
       id: "S4",
-      condition: "Deadline empty and not marked intentionally blank",
+      condition: "Deadline status unresolved",
       status:
         !body.deadline && !body.deadlineIntentionallyBlank
           ? "OPEN"
           : "CLEARED",
       message:
         !body.deadline && !body.deadlineIntentionallyBlank
-          ? "Deadline is blank and not marked intentionally blank."
-          : "Deadline supplied or intentionally blank.",
+          ? "Deadline is blank and no responsible reviewer has confirmed that it should remain blank or not applicable."
+          : "Deadline supplied or blank/not-applicable status confirmed by user input.",
     },
     {
       id: "S5",
@@ -572,11 +602,15 @@ function buildStopConditions(args: {
     {
       id: "S8",
       condition: "Equity or membership-interest language appears",
-      status: equityLanguageHits.length > 0 ? "OPEN" : "CLEARED",
+      status: equityIssueOpen ? "OPEN" : "CLEARED",
       message:
-        equityLanguageHits.length > 0
-          ? equityLanguageHits.join(", ")
-          : "No equity or membership-interest language found.",
+        equityLanguageHits.length === 0
+          ? "No equity or membership-interest language found."
+          : body.equityIssueRoutedToAttorney
+          ? `Equity/membership-interest language routed to attorney review: ${equityLanguageHits.join(
+              ", "
+            )}`
+          : equityLanguageHits.join(", "),
     },
   ];
 }
@@ -700,6 +734,7 @@ function buildConfirmationNeeded(args: {
   const s2 = stopConditions.find((stop) => stop.id === "S2");
   const s4 = stopConditions.find((stop) => stop.id === "S4");
   const s5 = stopConditions.find((stop) => stop.id === "S5");
+  const s8 = stopConditions.find((stop) => stop.id === "S8");
 
   if (s4?.status === "OPEN") {
     items.push({
@@ -733,7 +768,7 @@ function buildConfirmationNeeded(args: {
     });
   });
 
-  if (equityLanguageHits.length > 0) {
+  if (s8?.status === "OPEN" && equityLanguageHits.length > 0) {
     items.push({
       item: "Equity or membership-interest language",
       owner: "Attorney Review",
@@ -756,14 +791,19 @@ function buildAttorneyDecisionCards(args: {
     (stop) => stop.id === "S4" && stop.status === "OPEN"
   );
 
+  const s8Open = stopConditions.some(
+    (stop) => stop.id === "S8" && stop.status === "OPEN"
+  );
+
   if (s4Open) {
     cards.push({
       issue: "Deadline handling",
       whyItMatters:
-        "The draft contains a blank deadline, and the application has not been told that the blank is intentional.",
+        "The draft contains a blank deadline, and no responsible reviewer has confirmed that it should remain blank or not applicable.",
       decisionNeeded:
-        "Confirm whether the deadline should be supplied now, held pending client follow-up, or intentionally left blank with attorney approval.",
-      evidence: "S4 OPEN — Deadline is blank and not marked intentionally blank.",
+        "Confirm whether the deadline should be supplied now, held pending client follow-up, or marked blank/not applicable with responsible reviewer confirmation.",
+      evidence:
+        "S4 OPEN — Deadline is blank and no responsible reviewer has confirmed that it should remain blank or not applicable.",
       routing: "Human Confirmation Required",
     });
   }
@@ -782,7 +822,7 @@ function buildAttorneyDecisionCards(args: {
     });
   });
 
-  if (equityLanguageHits.length > 0) {
+  if (s8Open && equityLanguageHits.length > 0) {
     cards.push({
       issue: "Membership-certificate / ownership-interest-adjacent language",
       whyItMatters:
@@ -1226,6 +1266,14 @@ export async function POST(request: Request) {
 
   body.attorneyApprovedForExternalDelivery = Boolean(
     body.attorneyApprovedForExternalDelivery
+  );
+
+  body.captionBodyConsistencyChecked = Boolean(
+    body.captionBodyConsistencyChecked
+  );
+
+  body.equityIssueRoutedToAttorney = Boolean(
+    body.equityIssueRoutedToAttorney
   );
 
   const validationIssues = validateStructuredInputs(body);

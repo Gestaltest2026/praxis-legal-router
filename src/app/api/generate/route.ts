@@ -1,8 +1,13 @@
 import { NextResponse } from "next/server";
 
+type PackageType = "firstPass" | "reviewPackage" | "externalDelivery";
+
 type RequestBody = {
   mode: string;
   matterTypes: string[];
+  packageType?: PackageType;
+  primaryMatterType?: string;
+  riskFlags?: string[];
   rawMaterials: string;
   currentDraft: string;
   processNotes: string;
@@ -67,6 +72,51 @@ type MatterSnapshot = {
   dealTerms: DealTermRow[];
 };
 
+type RouteOwner =
+  | "Paralegal"
+  | "Internal QA"
+  | "Attorney"
+  | "Client Follow-Up";
+
+type RoutePriority = "Critical" | "High" | "Normal";
+
+type RouteId =
+  | "R1_QUARANTINE_CLEANUP"
+  | "R3_CAPTION_BODY_CHECK"
+  | "R4_DEAL_TERM_CONFIRMATION"
+  | "R5_DEADLINE_RESOLUTION"
+  | "R6_ATTORNEY_INSTRUCTION_CAPTURE"
+  | "R7_EQUITY_ROUTING"
+  | "R8_RESTRICTIVE_COVENANT_REVIEW"
+  | "R9_MULTI_SIGNER_EXECUTION"
+  | "R10_MISSING_PARTY_FOLLOWUP"
+  | "R12_EXTERNAL_DELIVERY_CHECK"
+  | "R0_READY_FOR_ATTORNEY_REVIEW";
+
+type PackageReadiness =
+  | "CLEANUP_REQUIRED"
+  | "CONFIRMATIONS_PENDING"
+  | "ATTORNEY_ISSUE_LIST_READY"
+  | "ATTORNEY_REVIEW_PACKAGE_READY"
+  | "EXTERNAL_DELIVERY_CHECK_REQUIRED";
+
+type WorkflowRoute = {
+  id: RouteId;
+  route: string;
+  owner: RouteOwner;
+  priority: RoutePriority;
+  reason: string;
+  nextAction: string;
+  triggeredBy: string[];
+};
+
+type WorkflowRoutePlan = {
+  primary: WorkflowRoute;
+  secondary: WorkflowRoute[];
+  readiness: PackageReadiness;
+  packageContext: PackageType;
+};
+
 type ConfirmationOwner =
   | "Client Follow-Up"
   | "Internal Cross-Check"
@@ -104,6 +154,7 @@ type EscalationMemoOutput = {
   executiveStatus: ExecutiveStatus;
   criticalBlocks: CriticalBlock[];
   matterSnapshot: MatterSnapshot;
+  workflowRoutePlan: WorkflowRoutePlan;
   confirmationNeeded: ConfirmationItem[];
   attorneyDecisionCards: AttorneyDecisionCard[];
   paralegalWorkQueue: ParalegalWorkItem[];
@@ -123,6 +174,26 @@ type ValidationIssue = {
   line: number;
   message: string;
   value: string;
+};
+
+const ROUTE_ORDER: RouteId[] = [
+  "R1_QUARANTINE_CLEANUP",
+  "R12_EXTERNAL_DELIVERY_CHECK",
+  "R10_MISSING_PARTY_FOLLOWUP",
+  "R4_DEAL_TERM_CONFIRMATION",
+  "R5_DEADLINE_RESOLUTION",
+  "R7_EQUITY_ROUTING",
+  "R3_CAPTION_BODY_CHECK",
+  "R6_ATTORNEY_INSTRUCTION_CAPTURE",
+  "R8_RESTRICTIVE_COVENANT_REVIEW",
+  "R9_MULTI_SIGNER_EXECUTION",
+  "R0_READY_FOR_ATTORNEY_REVIEW",
+];
+
+const PRIORITY_RANK: Record<RoutePriority, number> = {
+  Critical: 0,
+  High: 1,
+  Normal: 2,
 };
 
 function splitLines(value: string): string[] {
@@ -157,6 +228,72 @@ function termToRegex(term: string): RegExp {
   const suffix = endsWord ? "($|[^a-z0-9])" : "";
 
   return new RegExp(`${prefix}${escaped}${suffix}`, "i");
+}
+
+function normalizePackageType(value: unknown): PackageType {
+  if (
+    value === "firstPass" ||
+    value === "reviewPackage" ||
+    value === "externalDelivery"
+  ) {
+    return value;
+  }
+
+  return "firstPass";
+}
+
+function isExternalDeliveryContext(
+  bodyOrPackageType: RequestBody | PackageType
+): boolean {
+  const packageType =
+    typeof bodyOrPackageType === "string"
+      ? bodyOrPackageType
+      : normalizePackageType(bodyOrPackageType.packageType);
+
+  return packageType === "externalDelivery";
+}
+
+function getPrimaryMatterType(body: RequestBody): string {
+  return body.primaryMatterType || body.matterTypes[0] || body.mode || "";
+}
+
+function getRiskFlags(body: RequestBody): string[] {
+  if (Array.isArray(body.riskFlags) && body.riskFlags.length > 0) {
+    return body.riskFlags.filter(Boolean);
+  }
+
+  const primaryMatterType = getPrimaryMatterType(body);
+
+  return body.matterTypes.filter((item) => item && item !== primaryMatterType);
+}
+
+function getSelectedWorkflows(body: RequestBody): string[] {
+  const primaryMatterType = getPrimaryMatterType(body);
+  const riskFlags = getRiskFlags(body);
+
+  return [primaryMatterType, ...riskFlags].filter(Boolean);
+}
+
+function hasRiskFlag(body: RequestBody, flag: string): boolean {
+  const normalizedFlag = normalizeText(flag);
+
+  return getRiskFlags(body).some(
+    (item) => normalizeText(item) === normalizedFlag
+  );
+}
+
+function stopStatus(
+  stopConditions: StopCondition[],
+  id: StopCondition["id"]
+): StopStatus | undefined {
+  return stopConditions.find((stop) => stop.id === id)?.status;
+}
+
+function stopMessage(
+  stopConditions: StopCondition[],
+  id: StopCondition["id"]
+): string {
+  return stopConditions.find((stop) => stop.id === id)?.message || "";
 }
 
 function findOldMatterHits(
@@ -490,6 +627,8 @@ function findEquityLanguageHits(body: RequestBody): string[] {
       body.rawMaterials,
       body.currentDraft,
       body.dealTerms,
+      body.primaryMatterType || "",
+      getRiskFlags(body).join("\n"),
       body.matterTypes.join("\n"),
     ].join("\n")
   );
@@ -615,11 +754,316 @@ function buildStopConditions(args: {
   ];
 }
 
-function buildDraftResponse(stopConditions: StopCondition[]): string {
-  const doNotSendStops = stopConditions.filter(
-    (stop) =>
-      stop.status === "OPEN" && (stop.id === "S1" || stop.id === "S7")
-  );
+function makeRoute(args: {
+  id: RouteId;
+  route: string;
+  owner: RouteOwner;
+  priority: RoutePriority;
+  reason: string;
+  nextAction: string;
+  triggeredBy: string[];
+}): WorkflowRoute {
+  return args;
+}
+
+function promotePriority(priority: RoutePriority): RoutePriority {
+  if (priority === "Normal") return "High";
+  if (priority === "High") return "Critical";
+  return "Critical";
+}
+
+function applyUrgencyModifier(
+  routes: WorkflowRoute[],
+  body: RequestBody
+): WorkflowRoute[] {
+  if (!hasRiskFlag(body, "Urgent deadline")) return routes;
+
+  return routes.map((route) => ({
+    ...route,
+    priority: promotePriority(route.priority),
+    triggeredBy: [...route.triggeredBy, "riskFlag: Urgent deadline"],
+  }));
+}
+
+function routeOrderIndex(id: RouteId): number {
+  const index = ROUTE_ORDER.indexOf(id);
+  return index === -1 ? ROUTE_ORDER.length : index;
+}
+
+function sortRoutes(routes: WorkflowRoute[]): WorkflowRoute[] {
+  return [...routes].sort((a, b) => {
+    const priorityDiff = PRIORITY_RANK[a.priority] - PRIORITY_RANK[b.priority];
+
+    if (priorityDiff !== 0) return priorityDiff;
+
+    return routeOrderIndex(a.id) - routeOrderIndex(b.id);
+  });
+}
+
+function buildProfessionalWorkflowRoutes(args: {
+  body: RequestBody;
+  stopConditions: StopCondition[];
+  unresolvedDealTerms: DealTermRow[];
+  equityLanguageHits: string[];
+}): WorkflowRoute[] {
+  const { body, stopConditions, unresolvedDealTerms, equityLanguageHits } =
+    args;
+  const routes: WorkflowRoute[] = [];
+  const packageType = normalizePackageType(body.packageType);
+
+  if (stopStatus(stopConditions, "S1") === "OPEN") {
+    routes.push(
+      makeRoute({
+        id: "R1_QUARANTINE_CLEANUP",
+        route: "Draft quarantine / old-matter cleanup",
+        owner: "Internal QA",
+        priority: "Critical",
+        reason: `Old/excluded matter residue was detected in the current draft: ${stopMessage(
+          stopConditions,
+          "S1"
+        )}.`,
+        nextAction:
+          "Quarantine current draft, identify listed term locations, clean, and rerun safety gate before attorney review.",
+        triggeredBy: ["S1 OPEN"],
+      })
+    );
+  }
+
+  if (
+    packageType === "externalDelivery" &&
+    stopStatus(stopConditions, "S7") === "OPEN"
+  ) {
+    routes.push(
+      makeRoute({
+        id: "R12_EXTERNAL_DELIVERY_CHECK",
+        route: "External delivery approval check",
+        owner: "Attorney",
+        priority: "Critical",
+        reason:
+          "This package is in external delivery context and attorney approval is not confirmed.",
+        nextAction:
+          "Obtain attorney approval confirmation before any external delivery; no external response generated by Praxis.",
+        triggeredBy: ["packageType: externalDelivery", "S7 OPEN"],
+      })
+    );
+  }
+
+  if (hasRiskFlag(body, "Missing party or address information")) {
+    routes.push(
+      makeRoute({
+        id: "R10_MISSING_PARTY_FOLLOWUP",
+        route: "Missing party information follow-up",
+        owner: "Client Follow-Up",
+        priority: "High",
+        reason:
+          "The matter profile indicates missing party or address information.",
+        nextAction:
+          "Request missing party details from client; log follow-up date; bracket affected sections until received.",
+        triggeredBy: ["riskFlag: Missing party or address information"],
+      })
+    );
+  }
+
+  if (stopStatus(stopConditions, "S3") === "OPEN") {
+    routes.push(
+      makeRoute({
+        id: "R4_DEAL_TERM_CONFIRMATION",
+        route: "Deal-term provenance confirmation",
+        owner: "Attorney",
+        priority: "High",
+        reason: `One or more deal terms have unresolved provenance: ${unresolvedDealTerms
+          .map((row) => `${row.term} (${row.provenance || "blank"})`)
+          .join(", ")}.`,
+        nextAction:
+          "Route unresolved terms for attorney review; confirm with responsible owner; update provenance and rerun safety gate.",
+        triggeredBy: ["S3 OPEN"],
+      })
+    );
+  }
+
+  if (stopStatus(stopConditions, "S4") === "OPEN") {
+    routes.push(
+      makeRoute({
+        id: "R5_DEADLINE_RESOLUTION",
+        route: "Deadline resolution",
+        owner: "Paralegal",
+        priority: "High",
+        reason:
+          "Deadline is blank and blank/not-applicable status is not confirmed.",
+        nextAction:
+          "Confirm deadline with responsible owner, or confirm blank/not-applicable status; rerun safety gate.",
+        triggeredBy: ["S4 OPEN"],
+      })
+    );
+  }
+
+  if (stopStatus(stopConditions, "S8") === "OPEN") {
+    routes.push(
+      makeRoute({
+        id: "R7_EQUITY_ROUTING",
+        route: "Equity/membership issue routing",
+        owner: "Attorney",
+        priority: "High",
+        reason: `Equity or membership-interest language was detected: ${equityLanguageHits.join(
+          ", "
+        )}.`,
+        nextAction:
+          "Route detected language for attorney review: return-of-property language, ownership-interest language, or outside NDA workflow.",
+        triggeredBy: ["S8 OPEN"],
+      })
+    );
+  }
+
+  if (stopStatus(stopConditions, "S2") === "MODEL CHECK REQUIRED") {
+    routes.push(
+      makeRoute({
+        id: "R3_CAPTION_BODY_CHECK",
+        route: "Caption/body consistency check",
+        owner: "Paralegal",
+        priority: "High",
+        reason:
+          "Caption/title party consistency with body parties has not been confirmed.",
+        nextAction:
+          "Run caption/title vs. body party comparison; check control when confirmed; rerun safety gate.",
+        triggeredBy: ["S2 MODEL CHECK REQUIRED"],
+      })
+    );
+  }
+
+  if (stopStatus(stopConditions, "S6") === "OPEN") {
+    routes.push(
+      makeRoute({
+        id: "R6_ATTORNEY_INSTRUCTION_CAPTURE",
+        route: "Attorney instruction capture",
+        owner: "Paralegal",
+        priority: "Normal",
+        reason:
+          "No ATTORNEY INSTRUCTION section was found in the raw materials.",
+        nextAction:
+          "Obtain and paste the attorney instruction into Raw Materials so the assumed objective is replaced by a documented one.",
+        triggeredBy: ["S6 OPEN"],
+      })
+    );
+  }
+
+  if (hasRiskFlag(body, "Restrictive covenant / non-compete")) {
+    routes.push(
+      makeRoute({
+        id: "R8_RESTRICTIVE_COVENANT_REVIEW",
+        route: "Restrictive covenant / non-compete issue list",
+        owner: "Attorney",
+        priority: "Normal",
+        reason:
+          "The matter profile includes restrictive covenant or non-compete risk.",
+        nextAction:
+          "Prepare issue list for restrictive covenant terms; route for attorney review.",
+        triggeredBy: ["riskFlag: Restrictive covenant / non-compete"],
+      })
+    );
+  }
+
+  if (hasRiskFlag(body, "Multiple individual signers")) {
+    routes.push(
+      makeRoute({
+        id: "R9_MULTI_SIGNER_EXECUTION",
+        route: "Multi-signer execution formatting",
+        owner: "Paralegal",
+        priority: "Normal",
+        reason: "The matter profile includes multiple individual signers.",
+        nextAction:
+          "Reconcile signature blocks, per-page initials, and capacity language against the party table.",
+        triggeredBy: ["riskFlag: Multiple individual signers"],
+      })
+    );
+  }
+
+  if (routes.length === 0) {
+    routes.push(
+      makeRoute({
+        id: "R0_READY_FOR_ATTORNEY_REVIEW",
+        route: "Attorney-review package ready",
+        owner: "Attorney",
+        priority: "Normal",
+        reason: "No open deterministic route triggers were detected.",
+        nextAction:
+          "Attorney reviews package; no external response generated by Praxis.",
+        triggeredBy: ["No workflow route triggers"],
+      })
+    );
+  }
+
+  return sortRoutes(applyUrgencyModifier(routes, body));
+}
+
+function deriveReadiness(
+  routes: WorkflowRoute[],
+  packageType: PackageType
+): PackageReadiness {
+  if (packageType === "externalDelivery") {
+    return "EXTERNAL_DELIVERY_CHECK_REQUIRED";
+  }
+
+  if (routes.some((route) => route.id === "R1_QUARANTINE_CLEANUP")) {
+    return "CLEANUP_REQUIRED";
+  }
+
+  if (
+    routes.some((route) =>
+      [
+        "R3_CAPTION_BODY_CHECK",
+        "R5_DEADLINE_RESOLUTION",
+        "R6_ATTORNEY_INSTRUCTION_CAPTURE",
+        "R9_MULTI_SIGNER_EXECUTION",
+        "R10_MISSING_PARTY_FOLLOWUP",
+      ].includes(route.id)
+    )
+  ) {
+    return "CONFIRMATIONS_PENDING";
+  }
+
+  if (
+    routes.some((route) =>
+      [
+        "R4_DEAL_TERM_CONFIRMATION",
+        "R7_EQUITY_ROUTING",
+        "R8_RESTRICTIVE_COVENANT_REVIEW",
+      ].includes(route.id)
+    )
+  ) {
+    return "ATTORNEY_ISSUE_LIST_READY";
+  }
+
+  return "ATTORNEY_REVIEW_PACKAGE_READY";
+}
+
+function buildWorkflowRoutePlan(args: {
+  body: RequestBody;
+  stopConditions: StopCondition[];
+  unresolvedDealTerms: DealTermRow[];
+  equityLanguageHits: string[];
+}): WorkflowRoutePlan {
+  const packageContext = normalizePackageType(args.body.packageType);
+  const routes = buildProfessionalWorkflowRoutes(args);
+  const [primary, ...secondary] = routes;
+
+  return {
+    primary,
+    secondary,
+    readiness: deriveReadiness(routes, packageContext),
+    packageContext,
+  };
+}
+
+function buildDraftResponse(
+  stopConditions: StopCondition[],
+  packageType: PackageType
+): string {
+  const doNotSendStops = stopConditions.filter((stop) => {
+    if (stop.status !== "OPEN") return false;
+    if (stop.id === "S1") return true;
+    if (stop.id === "S7") return isExternalDeliveryContext(packageType);
+    return false;
+  });
 
   if (doNotSendStops.length === 0) {
     return "Not produced — external response generation is disabled in this workflow.";
@@ -633,27 +1077,37 @@ function buildDraftResponse(stopConditions: StopCondition[]): string {
 }
 
 function buildExecutiveStatus(
-  stopConditions: StopCondition[]
+  stopConditions: StopCondition[],
+  packageType: PackageType
 ): ExecutiveStatus {
   const s1Open = stopConditions.some(
     (stop) => stop.id === "S1" && stop.status === "OPEN"
   );
-  const s7Open = stopConditions.some(
-    (stop) => stop.id === "S7" && stop.status === "OPEN"
-  );
+  const s7ExternalDeliveryOpen =
+    isExternalDeliveryContext(packageType) &&
+    stopConditions.some(
+      (stop) => stop.id === "S7" && stop.status === "OPEN"
+    );
 
-  if (s1Open || s7Open) {
+  if (s1Open || s7ExternalDeliveryOpen) {
     return {
       status: "Do Not Send",
       reason:
-        "Blocked by old-matter residue and/or lack of attorney-approved draft status.",
+        "Blocked by old-matter residue and/or external-delivery approval status.",
     };
   }
 
-  const reviewRequired = stopConditions.some(
-    (stop) =>
-      stop.status === "OPEN" || stop.status === "MODEL CHECK REQUIRED"
-  );
+  const reviewRequired = stopConditions.some((stop) => {
+    if (stop.status !== "OPEN" && stop.status !== "MODEL CHECK REQUIRED") {
+      return false;
+    }
+
+    if (stop.id === "S7" && !isExternalDeliveryContext(packageType)) {
+      return false;
+    }
+
+    return true;
+  });
 
   if (reviewRequired) {
     return {
@@ -669,7 +1123,10 @@ function buildExecutiveStatus(
   };
 }
 
-function buildCriticalBlocks(stopConditions: StopCondition[]): CriticalBlock[] {
+function buildCriticalBlocks(
+  stopConditions: StopCondition[],
+  packageType: PackageType
+): CriticalBlock[] {
   const blocks: CriticalBlock[] = [];
 
   stopConditions.forEach((stop) => {
@@ -684,7 +1141,7 @@ function buildCriticalBlocks(stopConditions: StopCondition[]): CriticalBlock[] {
       });
     }
 
-    if (stop.id === "S7") {
+    if (stop.id === "S7" && isExternalDeliveryContext(packageType)) {
       blocks.push({
         id: "S7",
         issue: "Draft is not confirmed attorney-approved for external delivery.",
@@ -718,7 +1175,7 @@ function buildMatterSnapshot(body: RequestBody): MatterSnapshot {
   return {
     currentEntities: partyNamesByType(body.partyInfo, isEntityType),
     currentIndividuals: partyNamesByType(body.partyInfo, isIndividualType),
-    selectedWorkflows: body.matterTypes,
+    selectedWorkflows: getSelectedWorkflows(body),
     dealTerms: parseDealTerms(body.dealTerms),
   };
 }
@@ -841,16 +1298,20 @@ function buildParalegalWorkQueue(args: {
   stopConditions: StopCondition[];
   oldMatterHits: string[];
   unresolvedDealTerms: DealTermRow[];
+  packageType: PackageType;
 }): ParalegalWorkItem[] {
-  const { stopConditions, oldMatterHits, unresolvedDealTerms } = args;
+  const { stopConditions, oldMatterHits, unresolvedDealTerms, packageType } =
+    args;
   const items: ParalegalWorkItem[] = [];
 
   const s1Open = stopConditions.some(
     (stop) => stop.id === "S1" && stop.status === "OPEN"
   );
-  const s7Open = stopConditions.some(
-    (stop) => stop.id === "S7" && stop.status === "OPEN"
-  );
+  const s7Open =
+    isExternalDeliveryContext(packageType) &&
+    stopConditions.some(
+      (stop) => stop.id === "S7" && stop.status === "OPEN"
+    );
   const s2NeedsCheck = stopConditions.some(
     (stop) => stop.id === "S2" && stop.status === "MODEL CHECK REQUIRED"
   );
@@ -989,6 +1450,10 @@ function dedupeSourceDocuments(docs: SourceDocument[]): SourceDocument[] {
 }
 
 function buildMatterTitle(body: RequestBody): string {
+  const primaryMatterType = getPrimaryMatterType(body);
+
+  if (primaryMatterType) return primaryMatterType;
+
   if (body.matterTypes.includes("Mutual release + NDA")) {
     return "Mutual release + NDA";
   }
@@ -1013,13 +1478,20 @@ function buildEscalationMemo(args: {
     equityLanguageHits,
   } = args;
 
+  const packageType = normalizePackageType(body.packageType);
   const sourceDocuments = buildDefaultSourceDocuments(body, oldMatterHits);
 
   return {
     matterTitle: buildMatterTitle(body),
-    executiveStatus: buildExecutiveStatus(stopConditions),
-    criticalBlocks: buildCriticalBlocks(stopConditions),
+    executiveStatus: buildExecutiveStatus(stopConditions, packageType),
+    criticalBlocks: buildCriticalBlocks(stopConditions, packageType),
     matterSnapshot: buildMatterSnapshot(body),
+    workflowRoutePlan: buildWorkflowRoutePlan({
+      body,
+      stopConditions,
+      unresolvedDealTerms,
+      equityLanguageHits,
+    }),
     confirmationNeeded: buildConfirmationNeeded({
       stopConditions,
       unresolvedDealTerms,
@@ -1034,9 +1506,10 @@ function buildEscalationMemo(args: {
       stopConditions,
       oldMatterHits,
       unresolvedDealTerms,
+      packageType,
     }),
     watchlistSummary: buildWatchlistSummary(oldMatterTerms, oldMatterHits),
-    draftResponse: buildDraftResponse(stopConditions),
+    draftResponse: buildDraftResponse(stopConditions, packageType),
     sourceDocuments,
     internalStopConditions: stopConditions,
   };
@@ -1101,6 +1574,38 @@ function renderMatterSnapshot(snapshot: MatterSnapshot): string[] {
     });
   } else {
     lines.push("- Deal terms: None identified.");
+  }
+
+  return lines;
+}
+
+function renderWorkflowRoute(route: WorkflowRoute): string[] {
+  return [
+    `- **[${route.priority}] ${route.route}** — Owner: ${route.owner}`,
+    `  - Reason: ${route.reason}`,
+    `  - Next action: ${route.nextAction}`,
+    `  - Triggered by: ${route.triggeredBy.join("; ")}`,
+  ];
+}
+
+function renderProfessionalWorkflowRoutes(plan: WorkflowRoutePlan): string[] {
+  const lines: string[] = [
+    `**Readiness:** ${plan.readiness}`,
+    ``,
+    `**Package context:** ${plan.packageContext}`,
+    ``,
+    `**Primary Route**`,
+    ...renderWorkflowRoute(plan.primary),
+    ``,
+    `**Secondary Routes**`,
+  ];
+
+  if (plan.secondary.length === 0) {
+    lines.push("- None.");
+  } else {
+    plan.secondary.forEach((route) => {
+      lines.push(...renderWorkflowRoute(route));
+    });
   }
 
   return lines;
@@ -1179,19 +1684,22 @@ function renderEscalationMemo(memo: EscalationMemoOutput): string {
     `## 3. Matter Snapshot`,
     ...renderMatterSnapshot(memo.matterSnapshot),
     ``,
-    `## 4. Confirmation Needed`,
+    `## 4. Professional Workflow Route`,
+    ...renderProfessionalWorkflowRoutes(memo.workflowRoutePlan),
+    ``,
+    `## 5. Confirmation Needed`,
     ...renderConfirmationNeeded(memo.confirmationNeeded),
     ``,
-    `## 5. Attorney Decision Cards`,
+    `## 6. Attorney Decision Cards`,
     ...renderAttorneyDecisionCards(memo.attorneyDecisionCards),
     ``,
-    `## 6. Paralegal Work Queue`,
+    `## 7. Paralegal Work Queue`,
     ...renderParalegalWorkQueue(memo.paralegalWorkQueue),
     ``,
-    `## 7. Watchlist Summary`,
+    `## 8. Watchlist Summary`,
     ...renderWatchlistSummary(memo.watchlistSummary),
     ``,
-    `## 8. Draft Response`,
+    `## 9. Draft Response`,
     memo.draftResponse,
     ``,
     `## Appendix A. Source Documents`,
@@ -1214,12 +1722,19 @@ export async function POST(request: Request) {
     );
   }
 
+  body.matterTypes = Array.isArray(body.matterTypes) ? body.matterTypes : [];
+  body.riskFlags = Array.isArray(body.riskFlags) ? body.riskFlags : [];
+  body.packageType = normalizePackageType(body.packageType);
+
+  body.primaryMatterType =
+    typeof body.primaryMatterType === "string" ? body.primaryMatterType : "";
+
   const missing: string[] = [];
 
   if (!body.mode || typeof body.mode !== "string") missing.push("mode");
 
-  if (!Array.isArray(body.matterTypes) || body.matterTypes.length === 0) {
-    missing.push("matterTypes");
+  if (!body.primaryMatterType && body.matterTypes.length === 0) {
+    missing.push("primaryMatterType or matterTypes");
   }
 
   if (!body.rawMaterials || !body.rawMaterials.trim()) {

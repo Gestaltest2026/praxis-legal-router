@@ -273,6 +273,9 @@ export default function Home() {
         },
         body: JSON.stringify({
           mode: form.mode,
+          packageType: activePreset,
+          primaryMatterType: form.primaryMatterType,
+          riskFlags: form.riskFlags,
           matterTypes,
           rawMaterials: form.rawMaterials,
           currentDraft: form.currentDraft,

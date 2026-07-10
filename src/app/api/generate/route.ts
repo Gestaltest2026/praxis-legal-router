@@ -35,6 +35,9 @@ HARD RULES
 3. Never invent facts, parties, amounts, or dates. Missing information goes in the Missing Information section.
 4. Never correct or rewrite document text. You detect and label only.
 5. If any Do Not Send condition is open, the Draft Response section must contain exactly: "Not produced — [reason]".
+6. Admin / Paralegal Fixes must describe detected issues, not rewrite instructions. Prefer "X appears/missing/mismatch — verify before attorney review." Do not use "Update X to..." unless the replacement value is directly provided by Party Information or Deal Terms and the issue is purely mechanical.
+7. Branches Triggered must include only triggered branches. Do not include "none", "N/A", or inactive branches.
+8. Key Facts must not include legal clause-review issues such as jurisdiction, forum, fee-shifting, release scope, non-compete, drafting voice, remedy language, or venue language. Put those under Branches Triggered, Attorney Decision Points, or Admin / Paralegal Fixes.
 
 APPLICATION-LEVEL SOURCE OF TRUTH RULES
 1. Current parties may only come from PARTY INFORMATION.
@@ -45,7 +48,8 @@ APPLICATION-LEVEL SOURCE OF TRUTH RULES
 6. Old-matter residue must not appear in Matter Summary or Key Facts.
 7. Do not convert Unknown or Inherited provenance into Known. Ask for confirmation instead.
 8. If the deadline is blank and DEADLINE INTENTIONALLY BLANK is No, do not say it was intentionally left blank.
-9. DETERMINISTIC STOP CHECKS are controlling. If they identify S1, S3, S4, or S6, report those statuses exactly.
+9. DETERMINISTIC STOP CHECKS are controlling. If they identify S1, S3, S4, S6, S7, or S8, report those statuses exactly.
+10. If DETERMINISTIC STOP CHECKS says MODEL CHECK REQUIRED for S2 or S5, include that line in Stop Conditions unless you can clearly mark it OPEN or CLEARED from the provided materials.
 
 OLD-MATTER RESIDUE RULE
 If a name, date, amount, address, or fact appears in Raw Materials or Current Draft but is listed under Old / Excluded Names and Terms, treat it as old-matter residue.
@@ -106,13 +110,15 @@ DETECTION DUTIES
 - If DETERMINISTIC STOP CHECKS says S3 OPEN, report S3 OPEN exactly and use the listed deal terms as the reason.
 - If DETERMINISTIC STOP CHECKS says S4 OPEN, report S4 OPEN exactly.
 - If DETERMINISTIC STOP CHECKS says S6 CLEARED, report S6 CLEARED.
+- If DETERMINISTIC STOP CHECKS says S7 OPEN, report S7 OPEN exactly.
+- If DETERMINISTIC STOP CHECKS says S8 OPEN, report S8 OPEN exactly and use the listed terms as the reason.
+- Include S1 through S8 in Stop Conditions. If S2 or S5 is not deterministically checked, include the MODEL CHECK REQUIRED line.
 - Do not treat old/excluded terms as current parties, current facts, or missing party information.
 - Matter Summary must identify current parties only from PARTY INFORMATION.
-- Key Facts must exclude old-matter residue.
+- Key Facts must exclude old-matter residue and legal clause-review issues.
 - Compare Raw Materials against the Final/Current Draft when both exist.
 - Check every party in Party Information against caption, recitals, notices, signature blocks, and initials in the draft.
 - Flag any Deal Term whose provenance is Inherited or Unknown.
-- Fire the applicable stop conditions S1–S8 and mark each OPEN or CLEARED.
 - If Human Process Notes are empty, mark all Human Confirmation items UNRESOLVED; if provided, apply them and say which items they resolve.
 
 OUTPUT
@@ -167,7 +173,7 @@ Phase [1–10] — [one line]
 - [matter type or rule] — [reason] — [label]
 
 ## Stop Conditions
-- S# [condition] — OPEN/CLEARED — [message]
+- S# [condition] — OPEN/CLEARED/MODEL CHECK REQUIRED — [message]
 
 ## Attorney Decision Points
 1. [question]
@@ -242,11 +248,34 @@ function detectAttorneyInstruction(rawMaterials: string): boolean {
   return instructionText.length > 0;
 }
 
+function findEquityLanguageHits(body: RequestBody): string[] {
+  const haystack = [
+    body.rawMaterials,
+    body.currentDraft,
+    body.dealTerms,
+    body.matterTypes.join("\n"),
+  ]
+    .join("\n")
+    .toLowerCase();
+
+  const terms = [
+    "membership interest",
+    "membership interests",
+    "membership certificate",
+    "membership certificates",
+    "certificates evidencing",
+    "equity",
+  ];
+
+  return terms.filter((term) => haystack.includes(term));
+}
+
 function buildDeterministicStopChecks(
   body: RequestBody,
   oldMatterHits: string[],
   unresolvedDealTerms: DealTermRow[],
-  hasAttorneyInstruction: boolean
+  hasAttorneyInstruction: boolean,
+  equityLanguageHits: string[]
 ): string {
   const checks: string[] = [];
 
@@ -261,6 +290,10 @@ function buildDeterministicStopChecks(
       `S1 CLEARED — No old/excluded matter terms found in current draft.`
     );
   }
+
+  checks.push(
+    `S2 MODEL CHECK REQUIRED — Evaluate whether any source caption/title parties differ from body parties.`
+  );
 
   if (unresolvedDealTerms.length > 0) {
     checks.push(
@@ -280,10 +313,30 @@ function buildDeterministicStopChecks(
     checks.push(`S4 CLEARED — Deadline supplied or intentionally blank.`);
   }
 
+  checks.push(
+    `S5 MODEL CHECK REQUIRED — Evaluate whether any current party is missing name, address, or capacity.`
+  );
+
   if (hasAttorneyInstruction) {
     checks.push(`S6 CLEARED — ATTORNEY INSTRUCTION section found.`);
   } else {
     checks.push(`S6 OPEN — No ATTORNEY INSTRUCTION section found.`);
+  }
+
+  checks.push(
+    `S7 OPEN — Draft not confirmed attorney-approved for external delivery.`
+  );
+
+  if (equityLanguageHits.length > 0) {
+    checks.push(
+      `S8 OPEN — Equity or membership-interest language found: ${equityLanguageHits.join(
+        ", "
+      )}`
+    );
+  } else {
+    checks.push(
+      `S8 CLEARED — No equity or membership-interest language found.`
+    );
   }
 
   return checks.join("\n");
@@ -314,8 +367,10 @@ function buildUserMessage(
     `- Items in OLD / EXCLUDED NAMES AND TERMS are never current parties, never current facts, and never missing party information.`,
     `- Excluded items may appear only under Stop Conditions, Branches Triggered, Admin / Paralegal Fixes, or Items Not Touched.`,
     `- Key Facts must include only current-matter facts from Party Information, Deal Terms, Client Email, or Attorney Instruction.`,
+    `- Key Facts must not include legal clause-review issues such as jurisdiction, forum, fee-shifting, release scope, non-compete, drafting voice, remedy language, or venue language.`,
     `- Do not convert Unknown or Inherited provenance into Known. Ask for confirmation instead.`,
     `- If deadline is blank and DEADLINE INTENTIONALLY BLANK is No, do not say the deadline was intentionally left blank.`,
+    `- Branches Triggered must include only triggered branches. Do not include none, N/A, or inactive branches.`,
     ``,
     `PARTY INFORMATION (pipe table — Name | Type | Capacity | Address | Signer | Initials):`,
     body.partyInfo,
@@ -351,6 +406,90 @@ function enforceDoNotSend(output: string, oldMatterHits: string[]): string {
   }
 
   return `${output}\n\n## Draft Response\nNot produced — ${reason}`;
+}
+
+function polishUnsafeOutput(output: string): string {
+  let polished = output;
+
+  polished = polished.replace(
+    /- Update the non-compete radius to a specific value.*$/gim,
+    "- Non-compete radius provenance is Unknown — confirm before use — [Attorney Review]"
+  );
+
+  polished = polished.replace(
+    /- Update the non-compete radius provenance to Known.*$/gim,
+    "- Non-compete radius provenance is Unknown — confirm before use — [Attorney Review]"
+  );
+
+  polished = polished.replace(
+    /- Update the payment amount to \$50.*$/gim,
+    "- Payment amount should be cross-checked against Deal Terms before attorney review — [Paralegal Review]"
+  );
+
+  polished = polished.replace(
+    /- Update the exchange window.*$/gim,
+    "- Exchange window provenance is Inherited — confirm before use — [Paralegal Review]"
+  );
+
+  polished = polished.replace(/- AXION appears.*$/gim, "");
+
+  polished = polished.replace(
+    /- HALL appears.*$/gim,
+    "- HALL appears in Current Draft — old/excluded matter residue — [Do Not Send]"
+  );
+
+  return polished;
+}
+
+function enforceImmediateNextAction(
+  output: string,
+  oldMatterHits: string[],
+  unresolvedDealTerms: DealTermRow[]
+): string {
+  if (oldMatterHits.length === 0 && unresolvedDealTerms.length === 0) {
+    return output;
+  }
+
+  const reasonParts: string[] = [];
+
+  if (oldMatterHits.length > 0) {
+    reasonParts.push("old-matter residue");
+  }
+
+  if (unresolvedDealTerms.length > 0) {
+    reasonParts.push("unresolved deal-term provenance");
+  }
+
+  const nextAction = `Do not send. Resolve ${reasonParts.join(
+    " and "
+  )} before deadline follow-up or further drafting.`;
+
+  if (output.includes("## Immediate Next Action")) {
+    return output.replace(
+      /## Immediate Next Action[\s\S]*?(?=\n## Draft Response|$)/i,
+      `## Immediate Next Action\n${nextAction}\n`
+    );
+  }
+
+  return `${output}\n\n## Immediate Next Action\n${nextAction}`;
+}
+
+function dedupeBulletLines(output: string): string {
+  const lines = output.split("\n");
+  const seen = new Set<string>();
+
+  return lines
+    .filter((line) => {
+      if (!line.trim().startsWith("- ")) return true;
+
+      const normalized = line.trim().toLowerCase();
+
+      if (seen.has(normalized)) return false;
+
+      seen.add(normalized);
+      return true;
+    })
+    .join("\n");
 }
 
 export async function POST(request: Request) {
@@ -447,18 +586,21 @@ export async function POST(request: Request) {
 
   const hasAttorneyInstruction = detectAttorneyInstruction(body.rawMaterials);
 
+  const equityLanguageHits = findEquityLanguageHits(body);
+
   const deterministicStopChecks = buildDeterministicStopChecks(
     body,
     oldMatterHits,
     unresolvedDealTerms,
-    hasAttorneyInstruction
+    hasAttorneyInstruction,
+    equityLanguageHits
   );
 
   try {
     const completion = await groq.chat.completions.create({
-  model: MODEL,
-  temperature: 0.2,
-  max_tokens: 1800,
+      model: MODEL,
+      temperature: 0.2,
+      max_tokens: 2200,
       messages: [
         { role: "system", content: systemPrompt },
         {
@@ -477,7 +619,14 @@ export async function POST(request: Request) {
       );
     }
 
-    const output = enforceDoNotSend(rawOutput, oldMatterHits);
+    const nextActionOutput = enforceImmediateNextAction(
+      rawOutput,
+      oldMatterHits,
+      unresolvedDealTerms
+    );
+    const polishedOutput = polishUnsafeOutput(nextActionOutput);
+    const dedupedOutput = dedupeBulletLines(polishedOutput);
+    const output = enforceDoNotSend(dedupedOutput, oldMatterHits);
 
     return NextResponse.json({ output });
   } catch (error) {

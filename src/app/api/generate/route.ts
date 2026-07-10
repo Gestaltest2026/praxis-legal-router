@@ -29,7 +29,7 @@ type DealTermRow = {
   raw: string;
 };
 
-type StopStatus = "OPEN" | "CLEARED" | "MODEL CHECK REQUIRED";
+type StopStatus = "OPEN" | "CLEARED" | "HUMAN CONFIRMATION REQUIRED";
 
 type StopCondition = {
   id: "S1" | "S2" | "S3" | "S4" | "S5" | "S6" | "S7" | "S8";
@@ -240,6 +240,10 @@ function normalizePackageType(value: unknown): PackageType {
   }
 
   return "firstPass";
+}
+
+function isAttorneyReviewer(reviewerType: string): boolean {
+  return normalizeText(reviewerType) === "attorney";
 }
 
 function isExternalDeliveryContext(
@@ -663,6 +667,15 @@ function buildStopConditions(args: {
     equityLanguageHits,
   } = args;
 
+  const reviewerType = body.reviewerType || "Unknown";
+  const reviewerIsAttorney = isAttorneyReviewer(reviewerType);
+
+  const effectiveAttorneyApprovedForExternalDelivery =
+    reviewerIsAttorney && body.attorneyApprovedForExternalDelivery;
+
+  const attemptedNonAttorneyExternalApproval =
+    !reviewerIsAttorney && body.attorneyApprovedForExternalDelivery;
+
   const equityIssueOpen =
     equityLanguageHits.length > 0 && !body.equityIssueRoutedToAttorney;
 
@@ -681,10 +694,10 @@ function buildStopConditions(args: {
       condition: "Source caption/title parties differ from body parties",
       status: body.captionBodyConsistencyChecked
         ? "CLEARED"
-        : "MODEL CHECK REQUIRED",
+        : "HUMAN CONFIRMATION REQUIRED",
       message: body.captionBodyConsistencyChecked
-        ? "Caption/body party consistency check confirmed by user input."
-        : "Evaluate whether any source caption/title parties differ from body parties.",
+        ? `Caption/body party consistency check confirmed by ${reviewerType} reviewer input.`
+        : "Human confirmation required: evaluate whether any source caption/title parties differ from body parties.",
     },
     {
       id: "S3",
@@ -713,14 +726,16 @@ function buildStopConditions(args: {
       message:
         !body.deadline && !body.deadlineIntentionallyBlank
           ? "Deadline is blank and no responsible reviewer has confirmed that it should remain blank or not applicable."
-          : "Deadline supplied or blank/not-applicable status confirmed by user input.",
+          : body.deadline
+          ? `Deadline supplied by ${reviewerType} reviewer input.`
+          : `Blank/not-applicable deadline status confirmed by ${reviewerType} reviewer input.`,
     },
     {
       id: "S5",
       condition: "Party missing name, address, capacity, signer, or initials",
       status: "CLEARED",
       message:
-        "Party Information table passed deterministic validation for required columns and required values.",
+        "Party Information table passed deterministic validation for required columns and non-empty cells.",
     },
     {
       id: "S6",
@@ -733,9 +748,11 @@ function buildStopConditions(args: {
     {
       id: "S7",
       condition: "Draft not confirmed attorney-approved for external delivery",
-      status: body.attorneyApprovedForExternalDelivery ? "CLEARED" : "OPEN",
-      message: body.attorneyApprovedForExternalDelivery
-        ? "Attorney-approved external delivery status confirmed by user input."
+      status: effectiveAttorneyApprovedForExternalDelivery ? "CLEARED" : "OPEN",
+      message: effectiveAttorneyApprovedForExternalDelivery
+        ? "Attorney-approved external delivery status confirmed by Attorney reviewer input."
+        : attemptedNonAttorneyExternalApproval
+        ? `External-delivery approval was checked by ${reviewerType} reviewer input and was not treated as attorney approval.`
         : "Draft not confirmed attorney-approved for external delivery.",
     },
     {
@@ -746,7 +763,7 @@ function buildStopConditions(args: {
         equityLanguageHits.length === 0
           ? "No equity or membership-interest language found."
           : body.equityIssueRoutedToAttorney
-          ? `Equity/membership-interest language routed to attorney review: ${equityLanguageHits.join(
+          ? `Equity/membership-interest language routed to attorney review by ${reviewerType} reviewer input: ${equityLanguageHits.join(
               ", "
             )}`
           : equityLanguageHits.join(", "),
@@ -914,7 +931,7 @@ function buildProfessionalWorkflowRoutes(args: {
     );
   }
 
-  if (stopStatus(stopConditions, "S2") === "MODEL CHECK REQUIRED") {
+  if (stopStatus(stopConditions, "S2") === "HUMAN CONFIRMATION REQUIRED") {
     routes.push(
       makeRoute({
         id: "R3_CAPTION_BODY_CHECK",
@@ -925,7 +942,7 @@ function buildProfessionalWorkflowRoutes(args: {
           "Caption/title party consistency with body parties has not been confirmed.",
         nextAction:
           "Run caption/title vs. body party comparison; check control when confirmed; rerun safety gate.",
-        triggeredBy: ["S2 MODEL CHECK REQUIRED"],
+        triggeredBy: ["S2 HUMAN CONFIRMATION REQUIRED"],
       })
     );
   }
@@ -1019,7 +1036,10 @@ function buildProfessionalWorkflowRoutes(args: {
         priority: "Normal",
         reason: readyRoute.reason,
         nextAction: readyRoute.nextAction,
-        triggeredBy: ["No workflow route triggers", `packageType: ${packageType}`],
+        triggeredBy: [
+          "No workflow route triggers",
+          `packageType: ${packageType}`,
+        ],
       })
     );
   }
@@ -1139,7 +1159,10 @@ function buildExecutiveStatus(
   }
 
   const reviewRequired = stopConditions.some((stop) => {
-    if (stop.status !== "OPEN" && stop.status !== "MODEL CHECK REQUIRED") {
+    if (
+      stop.status !== "OPEN" &&
+      stop.status !== "HUMAN CONFIRMATION REQUIRED"
+    ) {
       return false;
     }
 
@@ -1154,7 +1177,7 @@ function buildExecutiveStatus(
     return {
       status: "Attorney Review Required",
       reason:
-        "First-pass issue scan found open or model-check-required workflow items. Triage the routes before drafting or delivery.",
+        "First-pass issue scan found open or human-confirmation-required workflow items. Triage the routes before drafting or delivery.",
     };
   }
 
@@ -1264,7 +1287,6 @@ function buildConfirmationNeeded(args: {
 
   const s2 = stopConditions.find((stop) => stop.id === "S2");
   const s4 = stopConditions.find((stop) => stop.id === "S4");
-  const s5 = stopConditions.find((stop) => stop.id === "S5");
   const s8 = stopConditions.find((stop) => stop.id === "S8");
 
   if (s4?.status === "OPEN") {
@@ -1275,19 +1297,11 @@ function buildConfirmationNeeded(args: {
     });
   }
 
-  if (s2?.status === "MODEL CHECK REQUIRED") {
+  if (s2?.status === "HUMAN CONFIRMATION REQUIRED") {
     items.push({
       item: "Caption/body party consistency",
       owner: "Internal Cross-Check",
-      source: "S2 MODEL CHECK REQUIRED",
-    });
-  }
-
-  if (s5?.status === "MODEL CHECK REQUIRED") {
-    items.push({
-      item: "Party name/address/capacity completeness",
-      owner: "Internal Cross-Check",
-      source: "S5 MODEL CHECK REQUIRED",
+      source: "S2 HUMAN CONFIRMATION REQUIRED",
     });
   }
 
@@ -1387,13 +1401,11 @@ function buildParalegalWorkQueue(args: {
       (stop) => stop.id === "S7" && stop.status === "OPEN"
     );
   const s2NeedsCheck = stopConditions.some(
-    (stop) => stop.id === "S2" && stop.status === "MODEL CHECK REQUIRED"
+    (stop) =>
+      stop.id === "S2" && stop.status === "HUMAN CONFIRMATION REQUIRED"
   );
   const s4Open = stopConditions.some(
     (stop) => stop.id === "S4" && stop.status === "OPEN"
-  );
-  const s5NeedsCheck = stopConditions.some(
-    (stop) => stop.id === "S5" && stop.status === "MODEL CHECK REQUIRED"
   );
 
   if (s1Open) {
@@ -1417,14 +1429,6 @@ function buildParalegalWorkQueue(args: {
   if (s2NeedsCheck) {
     items.push({
       task: "Run caption/title versus body party consistency check.",
-      owner: "Paralegal",
-      priority: "High",
-    });
-  }
-
-  if (s5NeedsCheck) {
-    items.push({
-      task: "Run party name, address, capacity, signer, and initials completeness check.",
       owner: "Paralegal",
       priority: "High",
     });

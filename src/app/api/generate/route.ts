@@ -140,6 +140,36 @@ type AttorneyDecisionCard = {
   routing: "Attorney Review" | "Human Confirmation Required";
 };
 
+type AttorneyQuestion = {
+  question: string;
+  sourceIssue: string;
+  priority: RoutePriority;
+  routing: "Attorney Review" | "Human Confirmation Required";
+};
+
+type DecisionTableRow = {
+  issue: string;
+  evidence: string;
+  options: string;
+  safeDefault: string;
+  owner: "Attorney" | "Paralegal" | "Client Follow-Up" | "Internal QA";
+};
+
+type SourceToIssueMapRow = {
+  issue: string;
+  sourceArea:
+    | "Current Draft"
+    | "Old Matter Terms"
+    | "Deal Terms"
+    | "Raw Materials"
+    | "Party Information"
+    | "Review Controls"
+    | "Risk Flags";
+  sourceDetail: string;
+  trigger: string;
+  confidence: "High" | "Medium" | "Low";
+};
+
 type ParalegalWorkItem = {
   task: string;
   owner: "Paralegal" | "Internal QA" | "Attorney";
@@ -160,6 +190,9 @@ type EscalationMemoOutput = {
   workflowRoutePlan: WorkflowRoutePlan;
   confirmationNeeded: ConfirmationItem[];
   attorneyDecisionCards: AttorneyDecisionCard[];
+  attorneyQuestions: AttorneyQuestion[];
+  decisionTable: DecisionTableRow[];
+  sourceToIssueMap: SourceToIssueMapRow[];
   paralegalWorkQueue: ParalegalWorkItem[];
   watchlistSummary: WatchlistSummary;
   draftResponse: string;
@@ -883,6 +916,7 @@ function sortAttorneyDecisionCards(
     (a, b) => PRIORITY_RANK[a.priority] - PRIORITY_RANK[b.priority]
   );
 }
+
 function buildProfessionalWorkflowRoutes(args: {
   body: RequestBody;
   stopConditions: StopCondition[];
@@ -1164,6 +1198,10 @@ function buildWorkflowRoutePlan(args: {
   const routes = buildProfessionalWorkflowRoutes(args);
   const [primary, ...secondary] = routes;
 
+  if (!primary) {
+    throw new Error("No workflow routes generated.");
+  }
+
   return {
     primary,
     secondary,
@@ -1417,11 +1455,11 @@ function buildAttorneyDecisionCards(args: {
     (stop) => stop.id === "S6" && stop.status === "OPEN"
   );
 
-const s7Open =
-  isExternalDeliveryContext(packageType) &&
-  stopConditions.some(
-    (stop) => stop.id === "S7" && stop.status === "OPEN"
-  );
+  const s7Open =
+    isExternalDeliveryContext(packageType) &&
+    stopConditions.some(
+      (stop) => stop.id === "S7" && stop.status === "OPEN"
+    );
 
   const s8Open = stopConditions.some(
     (stop) => stop.id === "S8" && stop.status === "OPEN"
@@ -1566,6 +1604,181 @@ const s7Open =
   return sortAttorneyDecisionCards(cards);
 }
 
+function buildAttorneyQuestions(
+  cards: AttorneyDecisionCard[]
+): AttorneyQuestion[] {
+  return cards.map((card) => {
+    let question = card.attorneyDecisionNeeded;
+
+    if (card.issue.startsWith("Deal-term provenance:")) {
+      const term = card.issue.replace("Deal-term provenance:", "").trim();
+
+      question = `Should ${term} be included as stated, revised, removed, or confirmed before use?`;
+    }
+
+    if (card.issue === "External-delivery approval not confirmed") {
+      question =
+        "Has an Attorney reviewer approved this exact draft for external delivery?";
+    }
+
+    if (card.issue === "Old-matter residue in current draft") {
+      question =
+        "Has the old-matter residue been removed or otherwise addressed so the cleaned draft can be reviewed?";
+    }
+
+    if (card.issue === "Caption/body party consistency not confirmed") {
+      question =
+        "Do the caption/title parties match the body parties, or is correction required?";
+    }
+
+    if (card.issue === "Deadline handling") {
+      question =
+        "Should a deadline be supplied, confirmed blank/not applicable, or held pending follow-up?";
+    }
+
+    if (card.issue === "Attorney instruction missing") {
+      question =
+        "What attorney instruction should govern this review package?";
+    }
+
+    if (card.issue === "Equity or membership-interest-adjacent language") {
+      question =
+        "Is the equity or membership-interest language ordinary return-of-property language, or does it require separate ownership-rights review?";
+    }
+
+    return {
+      question,
+      sourceIssue: card.issue,
+      priority: card.priority,
+      routing: card.routing,
+    };
+  });
+}
+
+function decisionOptionsForCard(card: AttorneyDecisionCard): string {
+  if (card.issue.startsWith("Deal-term provenance:")) {
+    return "Include as stated / revise / remove / request confirmation";
+  }
+
+  if (card.issue === "External-delivery approval not confirmed") {
+    return "Approve external delivery / reject / return for revision";
+  }
+
+  if (card.issue === "Old-matter residue in current draft") {
+    return "Confirm cleanup / require further cleanup / quarantine";
+  }
+
+  if (card.issue === "Caption/body party consistency not confirmed") {
+    return "Confirm match / correct parties / escalate";
+  }
+
+  if (card.issue === "Deadline handling") {
+    return "Supply deadline / confirm blank or not applicable / request follow-up";
+  }
+
+  if (card.issue === "Attorney instruction missing") {
+    return "Provide instruction / request instruction / hold package";
+  }
+
+  if (card.issue === "Equity or membership-interest-adjacent language") {
+    return "Treat as ordinary return-of-property / revise / route separately";
+  }
+
+  return "Approve / revise / remove / request confirmation";
+}
+
+function decisionOwnerForCard(
+  card: AttorneyDecisionCard
+): DecisionTableRow["owner"] {
+  if (card.routing === "Attorney Review") return "Attorney";
+
+  if (card.issue === "Deadline handling") return "Paralegal";
+
+  if (card.issue === "Caption/body party consistency not confirmed") {
+    return "Paralegal";
+  }
+
+  return "Attorney";
+}
+
+function buildDecisionTable(
+  cards: AttorneyDecisionCard[]
+): DecisionTableRow[] {
+  return cards.map((card) => ({
+    issue: card.issue,
+    evidence: card.evidence,
+    options: decisionOptionsForCard(card),
+    safeDefault: card.safeNextStep,
+    owner: decisionOwnerForCard(card),
+  }));
+}
+
+function sourceAreaForCard(
+  card: AttorneyDecisionCard
+): SourceToIssueMapRow["sourceArea"] {
+  if (card.issue === "Old-matter residue in current draft") {
+    return "Current Draft";
+  }
+
+  if (card.issue === "Caption/body party consistency not confirmed") {
+    return "Review Controls";
+  }
+
+  if (card.issue === "Deadline handling") {
+    return "Review Controls";
+  }
+
+  if (card.issue.startsWith("Deal-term provenance:")) {
+    return "Deal Terms";
+  }
+
+  if (card.issue === "Attorney instruction missing") {
+    return "Raw Materials";
+  }
+
+  if (card.issue === "External-delivery approval not confirmed") {
+    return "Review Controls";
+  }
+
+  if (card.issue === "Equity or membership-interest-adjacent language") {
+    return "Raw Materials";
+  }
+
+  return "Raw Materials";
+}
+
+function triggerForCard(card: AttorneyDecisionCard): string {
+  if (card.evidence.startsWith("S1")) return "S1 OPEN";
+  if (card.evidence.startsWith("S2")) {
+    return "S2 HUMAN CONFIRMATION REQUIRED";
+  }
+  if (card.evidence.startsWith("S4")) return "S4 OPEN";
+  if (card.evidence.startsWith("S6")) return "S6 OPEN";
+  if (card.evidence.startsWith("S7")) return "S7 OPEN";
+
+  if (card.issue.startsWith("Deal-term provenance:")) {
+    return "S3 OPEN";
+  }
+
+  if (card.issue === "Equity or membership-interest-adjacent language") {
+    return "S8 OPEN";
+  }
+
+  return "Derived from attorney decision card";
+}
+
+function buildSourceToIssueMap(
+  cards: AttorneyDecisionCard[]
+): SourceToIssueMapRow[] {
+  return cards.map((card) => ({
+    issue: card.issue,
+    sourceArea: sourceAreaForCard(card),
+    sourceDetail: card.evidence,
+    trigger: triggerForCard(card),
+    confidence: "High",
+  }));
+}
+
 function buildParalegalWorkQueue(args: {
   stopConditions: StopCondition[];
   oldMatterHits: string[];
@@ -1638,6 +1851,7 @@ function buildParalegalWorkQueue(args: {
 
   return items;
 }
+
 function buildWatchlistSummary(
   oldMatterTerms: string[],
   oldMatterHits: string[]
@@ -1742,12 +1956,19 @@ function buildEscalationMemo(args: {
   const packageType = normalizePackageType(body.packageType);
   const sourceDocuments = buildDefaultSourceDocuments(body, oldMatterHits);
 
+  const attorneyDecisionCards = buildAttorneyDecisionCards({
+    stopConditions,
+    unresolvedDealTerms,
+    equityLanguageHits,
+    packageType,
+  });
+
   return {
     matterTitle: buildMatterTitle(body),
     executiveStatus: buildExecutiveStatus(stopConditions, packageType),
     criticalBlocks: buildCriticalBlocks(stopConditions, packageType),
     matterSnapshot: buildMatterSnapshot(body),
-    workflowRoutePlan: buildWorkflowRoutePlan({
+            workflowRoutePlan: buildWorkflowRoutePlan({
       body,
       stopConditions,
       unresolvedDealTerms,
@@ -1758,12 +1979,10 @@ function buildEscalationMemo(args: {
       unresolvedDealTerms,
       equityLanguageHits,
     }),
-attorneyDecisionCards: buildAttorneyDecisionCards({
-  stopConditions,
-  unresolvedDealTerms,
-  equityLanguageHits,
-  packageType,
-}),
+    attorneyDecisionCards,
+    attorneyQuestions: buildAttorneyQuestions(attorneyDecisionCards),
+    decisionTable: buildDecisionTable(attorneyDecisionCards),
+    sourceToIssueMap: buildSourceToIssueMap(attorneyDecisionCards),
     paralegalWorkQueue: buildParalegalWorkQueue({
       stopConditions,
       oldMatterHits,
@@ -1898,6 +2117,49 @@ function renderAttorneyDecisionCards(cards: AttorneyDecisionCard[]): string[] {
   ]);
 }
 
+function renderAttorneyQuestions(questions: AttorneyQuestion[]): string[] {
+  if (questions.length === 0) return ["- None."];
+
+  return questions.map(
+    (question, index) =>
+      `${index + 1}. **[${question.priority}]** ${question.question} — Source: ${question.sourceIssue} — Routing: ${question.routing}`
+  );
+}
+
+function renderDecisionTable(rows: DecisionTableRow[]): string[] {
+  if (rows.length === 0) return ["- None."];
+
+  return [
+    `| Issue | Evidence | Options | Safe default | Owner |`,
+    `|---|---|---|---|---|`,
+    ...rows.map(
+      (row) =>
+        `| ${escapeTable(row.issue)} | ${escapeTable(
+          row.evidence
+        )} | ${escapeTable(row.options)} | ${escapeTable(
+          row.safeDefault
+        )} | ${escapeTable(row.owner)} |`
+    ),
+  ];
+}
+
+function renderSourceToIssueMap(rows: SourceToIssueMapRow[]): string[] {
+  if (rows.length === 0) return ["- None."];
+
+  return [
+    `| Issue | Source area | Source detail | Trigger | Confidence |`,
+    `|---|---|---|---|---|`,
+    ...rows.map(
+      (row) =>
+        `| ${escapeTable(row.issue)} | ${escapeTable(
+          row.sourceArea
+        )} | ${escapeTable(row.sourceDetail)} | ${escapeTable(
+          row.trigger
+        )} | ${escapeTable(row.confidence)} |`
+    ),
+  ];
+}
+
 function renderParalegalWorkQueue(items: ParalegalWorkItem[]): string[] {
   if (items.length === 0) return ["- None."];
 
@@ -1968,20 +2230,29 @@ function renderEscalationMemo(memo: EscalationMemoOutput): string {
     ``,
     `## 5. Confirmation Needed`,
     ...renderConfirmationNeeded(memo.confirmationNeeded),
-    ``,
+        ``,
     `## 6. Attorney Decision Brief`,
     ...renderAttorneyDecisionCards(memo.attorneyDecisionCards),
     ``,
-    `## 7. Paralegal Work Queue`,
+    `## 7. Attorney Questions`,
+    ...renderAttorneyQuestions(memo.attorneyQuestions),
+    ``,
+    `## 8. Decision Table`,
+    ...renderDecisionTable(memo.decisionTable),
+    ``,
+    `## 9. Source-to-Issue Map`,
+    ...renderSourceToIssueMap(memo.sourceToIssueMap),
+    ``,
+    `## 10. Paralegal Work Queue`,
     ...renderParalegalWorkQueue(memo.paralegalWorkQueue),
     ``,
-    `## 8. Watchlist Summary`,
+    `## 11. Watchlist Summary`,
     ...renderWatchlistSummary(memo.watchlistSummary),
     ``,
-    `## 9. Draft Response`,
+    `## 12. Draft Response`,
     memo.draftResponse,
-    ``,
-    `## 10. Human Process Notes`,
+        ``,
+    `## 13. Human Process Notes`,
     ...renderHumanProcessNotes(memo.processNotes),
     ``,
     `## Appendix A. Source Documents`,

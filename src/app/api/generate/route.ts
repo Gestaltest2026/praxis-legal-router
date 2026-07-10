@@ -1083,17 +1083,26 @@ function buildExecutiveStatus(
   const s1Open = stopConditions.some(
     (stop) => stop.id === "S1" && stop.status === "OPEN"
   );
+
   const s7ExternalDeliveryOpen =
     isExternalDeliveryContext(packageType) &&
     stopConditions.some(
       (stop) => stop.id === "S7" && stop.status === "OPEN"
     );
 
-  if (s1Open || s7ExternalDeliveryOpen) {
+  if (s1Open) {
     return {
       status: "Do Not Send",
       reason:
-        "Blocked by old-matter residue and/or external-delivery approval status.",
+        "Old-matter residue was detected in the current draft. Quarantine and cleanup are required before attorney review or external delivery.",
+    };
+  }
+
+  if (s7ExternalDeliveryOpen) {
+    return {
+      status: "Do Not Send",
+      reason:
+        "External-delivery approval has not been confirmed. Do not use the draft externally until attorney approval is recorded.",
     };
   }
 
@@ -1109,17 +1118,50 @@ function buildExecutiveStatus(
     return true;
   });
 
-  if (reviewRequired) {
+  if (reviewRequired && packageType === "firstPass") {
     return {
       status: "Attorney Review Required",
       reason:
-        "Open or model-check-required workflow items remain before external delivery.",
+        "First-pass issue scan found open or model-check-required workflow items. Triage the routes before drafting or delivery.",
+    };
+  }
+
+  if (reviewRequired && packageType === "reviewPackage") {
+    return {
+      status: "Attorney Review Required",
+      reason:
+        "Attorney-review package has open workflow items that should be resolved or routed before review completion.",
+    };
+  }
+
+  if (reviewRequired && packageType === "externalDelivery") {
+    return {
+      status: "Attorney Review Required",
+      reason:
+        "External-delivery check found open workflow items. Resolve or route these items before external delivery.",
+    };
+  }
+
+  if (packageType === "firstPass") {
+    return {
+      status: "Ready for Attorney Review",
+      reason:
+        "First-pass scan found no open deterministic blocks; an attorney-review package may be prepared.",
+    };
+  }
+
+  if (packageType === "reviewPackage") {
+    return {
+      status: "Ready for Attorney Review",
+      reason:
+        "Attorney-review package is assembled. External delivery remains disabled in this workflow.",
     };
   }
 
   return {
     status: "Ready for Attorney Review",
-    reason: "No open deterministic blocks were detected.",
+    reason:
+      "External-delivery check has no open deterministic blocks. Praxis still does not generate an external response.",
   };
 }
 

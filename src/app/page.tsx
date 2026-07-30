@@ -2,14 +2,6 @@
 
 import { useState } from "react";
 
-const WORKFLOW_MODES = [
-  "General Attorney Review Memo",
-  "NDA Preparation",
-  "NDA Difference Analysis",
-  "NDA Branching Logic",
-  "NDA Attorney-Review Ready Package",
-];
-
 const PRIMARY_MATTER_TYPES = [
   "New NDA from scratch",
   "Prior agreement converted to new matter",
@@ -26,9 +18,9 @@ const RISK_FLAGS = [
 ];
 
 const PARTY_TEMPLATE = `Name | Type | Capacity | Address | Signer | Initials
-AXION STUDIOS, LLC | Entity | — | 14105 Carissa Meadows Ct, Riverview, FL 33569 | Zane Campbell (AMBR) | A.S.
+AXION STUDIOS, LLC | Entity | Entity party | 14105 Carissa Meadows Ct, Riverview, FL 33569 | Zane Campbell (AMBR) | A.S.
 ZANE CAMPBELL | Individual | individually and as Manager of AXION | same as above | self | Z.C.
-FRAMEHOUSE LLC | Entity | — | 189 Lexington Avenue, Dumont, NJ 07628 | Michaela Permuy (AMBR) | F.H.
+FRAMEHOUSE LLC | Entity | Entity party | 189 Lexington Avenue, Dumont, NJ 07628 | Michaela Permuy (AMBR) | F.H.
 MICHAELA PERMUY | Individual | individually and as Manager of FRAMEHOUSE | same as above | self | M.P.
 DUSTYN BIELSKI | Individual | individually and as Manager of FRAMEHOUSE | same as above | self | D.B.`;
 
@@ -57,8 +49,9 @@ const RAW_MATERIALS_PLACEHOLDER = `--- TEMPLATE ---
 
 type Preset = "firstPass" | "reviewPackage" | "externalDelivery";
 
+type ReviewerType = "Admin" | "Paralegal" | "Attorney";
+
 type FormState = {
-  mode: string;
   primaryMatterType: string;
   riskFlags: string[];
   rawMaterials: string;
@@ -69,14 +62,68 @@ type FormState = {
   dealTerms: string;
   deadline: string;
   deadlineIntentionallyBlank: boolean;
-  reviewerType: string;
+  reviewerType: ReviewerType;
   attorneyApprovedForExternalDelivery: boolean;
   captionBodyConsistencyChecked: boolean;
   equityIssueRoutedToAttorney: boolean;
 };
 
+type ApiIssue = {
+  field: string;
+  line: number;
+  message: string;
+  value: string;
+};
+
+type ApiResponse = {
+  output?: string;
+  error?: string;
+  issues?: ApiIssue[];
+};
+
+const PACKAGE_COPY: Record<
+  Preset,
+  {
+    label: string;
+    context: string;
+    purpose: string;
+    controls: string;
+    safety: string;
+  }
+> = {
+  firstPass: {
+    label: "First Pass / Issue Scan",
+    context: "firstPass",
+    purpose:
+      "Internal first-pass triage. Use this when the matter is still being scanned for issues.",
+    controls:
+      "Package selection does not auto-confirm any review control. Each confirmation must be checked individually by a human reviewer.",
+    safety:
+      "External delivery is disabled. S7 may remain open internally without creating a Do Not Send block.",
+  },
+  reviewPackage: {
+    label: "Attorney Review Package",
+    context: "reviewPackage",
+    purpose:
+      "Use this when the package is being assembled for attorney review, not for external delivery.",
+    controls:
+      "Package selection does not assert caption/body review, deadline status, equity routing, or attorney approval. Confirmations must be made separately.",
+    safety:
+      "External delivery remains disabled. Praxis does not produce external response language.",
+  },
+  externalDelivery: {
+    label: "External Delivery Check",
+    context: "externalDelivery",
+    purpose:
+      "Final safety check before attorney-controlled external delivery.",
+    controls:
+      "Attorney-approved external delivery status must be confirmed by an Attorney reviewer. Package selection alone does not clear S7.",
+    safety:
+      "Praxis still does not generate or send an external response. It only reports whether the package is blocked.",
+  },
+};
+
 const initialForm: FormState = {
-  mode: "NDA Preparation",
   primaryMatterType: "Mutual release + NDA",
   riskFlags: [],
   rawMaterials: "",
@@ -183,8 +230,52 @@ const smallButtonStyle: React.CSSProperties = {
   cursor: "pointer",
 };
 
+const infoBoxStyle: React.CSSProperties = {
+  marginTop: 14,
+  border: "1px solid #1d4ed8",
+  background: "#0f1f3d",
+  borderRadius: 8,
+  padding: "12px 14px",
+};
+
+const warningBoxStyle: React.CSSProperties = {
+  background: "#2a1f0b",
+  border: "1px solid #a16207",
+  color: "#facc15",
+  borderRadius: 6,
+  padding: "9px 12px",
+  fontSize: 13,
+  marginTop: 10,
+};
+
 function requiredMark() {
   return <span style={{ color: "#f87171" }}> *</span>;
+}
+
+function formatApiError(data: ApiResponse, status: number): string {
+  const lines: string[] = [
+    data.error || `Request failed with status ${status}`,
+  ];
+
+  if (Array.isArray(data.issues) && data.issues.length > 0) {
+    lines.push("");
+    lines.push("Fix the following input issue(s):");
+
+    data.issues.forEach((issue, index) => {
+      const location =
+        issue.line > 0
+          ? `${issue.field} line ${issue.line}`
+          : `${issue.field}`;
+
+      lines.push(`${index + 1}. ${location}: ${issue.message}`);
+
+      if (issue.value) {
+        lines.push(`   Value: ${issue.value}`);
+      }
+    });
+  }
+
+  return lines.join("\n");
 }
 
 export default function Home() {
@@ -195,6 +286,9 @@ export default function Home() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [copied, setCopied] = useState(false);
+
+  const packageCopy = PACKAGE_COPY[activePreset];
+  const attorneyApprovalDisabled = form.reviewerType !== "Attorney";
 
   const set = <K extends keyof FormState>(key: K, value: FormState[K]) =>
     setForm((prev) => ({ ...prev, [key]: value }));
@@ -214,43 +308,25 @@ export default function Home() {
 
   function applyPreset(preset: Preset) {
     setActivePreset(preset);
+  }
 
-    if (preset === "firstPass") {
-      setForm((prev) => ({
-        ...prev,
-        captionBodyConsistencyChecked: false,
-        deadlineIntentionallyBlank: false,
-        equityIssueRoutedToAttorney: false,
-        attorneyApprovedForExternalDelivery: false,
-      }));
-    }
-
-    if (preset === "reviewPackage") {
-      setForm((prev) => ({
-        ...prev,
-        captionBodyConsistencyChecked: true,
-        deadlineIntentionallyBlank: true,
-        equityIssueRoutedToAttorney: true,
-        attorneyApprovedForExternalDelivery: false,
-      }));
-    }
-
-    if (preset === "externalDelivery") {
-      setForm((prev) => ({
-        ...prev,
-        captionBodyConsistencyChecked: true,
-        deadlineIntentionallyBlank: true,
-        equityIssueRoutedToAttorney: true,
-        attorneyApprovedForExternalDelivery: true,
-      }));
-    }
+  function handleReviewerTypeChange(value: ReviewerType) {
+    setForm((prev) => ({
+      ...prev,
+      reviewerType: value,
+      attorneyApprovedForExternalDelivery:
+        value === "Attorney" ? prev.attorneyApprovedForExternalDelivery : false,
+    }));
   }
 
   const deadlineWarning =
     form.deadline === "" && !form.deadlineIntentionallyBlank;
 
+  const externalDeliveryWarning =
+    activePreset === "externalDelivery" &&
+    !form.attorneyApprovedForExternalDelivery;
+
   const canSubmit =
-    form.mode.trim() !== "" &&
     form.primaryMatterType.trim() !== "" &&
     form.rawMaterials.trim() !== "" &&
     form.partyInfo.trim() !== "" &&
@@ -272,7 +348,6 @@ export default function Home() {
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
-          mode: form.mode,
           packageType: activePreset,
           primaryMatterType: form.primaryMatterType,
           riskFlags: form.riskFlags,
@@ -295,10 +370,10 @@ export default function Home() {
 
       const text = await res.text();
 
-      let data: { output?: string; error?: string };
+      let data: ApiResponse;
 
       try {
-        data = JSON.parse(text);
+        data = JSON.parse(text) as ApiResponse;
       } catch {
         throw new Error(
           `Server returned non-JSON response (status ${res.status}): ${text.slice(
@@ -309,7 +384,7 @@ export default function Home() {
       }
 
       if (!res.ok) {
-        throw new Error(data.error || `Request failed with status ${res.status}`);
+        throw new Error(formatApiError(data, res.status));
       }
 
       setOutput(data.output || "(empty response)");
@@ -363,19 +438,45 @@ export default function Home() {
           <h1 style={{ fontSize: 28, margin: "6px 0 4px" }}>
             NDA Review Package Builder
           </h1>
-          <p style={{ ...hintStyle, maxWidth: 720, margin: 0 }}>
-            Paste the matter materials. Praxis flags blockers and prepares an
-            attorney-review memo. No legal advice. Nothing is sent externally.
+          <p style={{ ...hintStyle, maxWidth: 760, margin: 0 }}>
+            Praxis is a professional workflow router and safety gate for
+            legal-document preparation. It prepares attorney-review memos. It
+            does not give legal advice, decide enforceability, generate
+            external-send language, or send anything externally.
           </p>
+          <a
+            href="/retainer"
+            style={{
+              display: "inline-block",
+              marginTop: 14,
+              padding: "10px 14px",
+              border: "1px solid #1d4ed8",
+              borderRadius: 8,
+              background: "#0f1f3d",
+              color: "#bfdbfe",
+              fontSize: 13,
+              fontWeight: 750,
+              textDecoration: "none",
+            }}
+          >
+            Open Retainer Production Pilot →
+          </a>
         </header>
 
         <section style={cardStyle}>
           <div style={cardHeaderStyle}>Package Type</div>
           <div style={hintStyle}>
-            Start here. This sets the review controls automatically.
+            Start here. The package type controls how Praxis interprets open
+            workflow items and external-delivery approval. Package type does not
+            automatically confirm facts or clear review controls.
           </div>
+
           <div style={{ ...segmentedStyle, marginTop: 12 }}>
-            {presetButton("firstPass", "First Pass", "Find every issue.")}
+            {presetButton(
+              "firstPass",
+              "First Pass",
+              "Internal issue scan."
+            )}
             {presetButton(
               "reviewPackage",
               "Attorney Review Package",
@@ -384,8 +485,37 @@ export default function Home() {
             {presetButton(
               "externalDelivery",
               "External Delivery Check",
-              "Final send-control check."
+              "Attorney-controlled send check."
             )}
+          </div>
+
+          <div style={infoBoxStyle}>
+            <div
+              style={{
+                fontSize: 13,
+                fontWeight: 750,
+                color: "#bfdbfe",
+                marginBottom: 6,
+              }}
+            >
+              Active package: {packageCopy.label}
+            </div>
+            <div style={hintStyle}>
+              <strong style={{ color: "#dbeafe" }}>Context:</strong>{" "}
+              {packageCopy.context}
+            </div>
+            <div style={{ ...hintStyle, marginTop: 4 }}>
+              <strong style={{ color: "#dbeafe" }}>Purpose:</strong>{" "}
+              {packageCopy.purpose}
+            </div>
+            <div style={{ ...hintStyle, marginTop: 4 }}>
+              <strong style={{ color: "#dbeafe" }}>Controls:</strong>{" "}
+              {packageCopy.controls}
+            </div>
+            <div style={{ ...hintStyle, marginTop: 4 }}>
+              <strong style={{ color: "#dbeafe" }}>Safety rule:</strong>{" "}
+              {packageCopy.safety}
+            </div>
           </div>
         </section>
 
@@ -435,12 +565,19 @@ export default function Home() {
           <select
             style={{ ...inputStyle, maxWidth: 240 }}
             value={form.reviewerType}
-            onChange={(e) => set("reviewerType", e.target.value)}
+            onChange={(e) =>
+              handleReviewerTypeChange(e.target.value as ReviewerType)
+            }
           >
             <option value="Admin">Admin</option>
             <option value="Paralegal">Paralegal</option>
             <option value="Attorney">Attorney</option>
           </select>
+          <div style={{ ...hintStyle, marginTop: 6 }}>
+            Reviewer type is used for attestation controls. Attorney external
+            delivery approval can only be asserted when reviewer type is
+            Attorney.
+          </div>
         </section>
 
         <section style={cardStyle}>
@@ -524,17 +661,7 @@ export default function Home() {
           />
 
           {deadlineWarning && (
-            <div
-              style={{
-                background: "#2a1f0b",
-                border: "1px solid #a16207",
-                color: "#facc15",
-                borderRadius: 6,
-                padding: "9px 12px",
-                fontSize: 13,
-                marginTop: 10,
-              }}
-            >
+            <div style={warningBoxStyle}>
               Blank deadline will be flagged unless blank / not applicable is
               confirmed in Review Controls.
             </div>
@@ -544,8 +671,10 @@ export default function Home() {
         <section style={cardStyle}>
           <div style={cardHeaderStyle}>4. Review Controls</div>
           <div style={hintStyle}>
-            These controls route the matter for attorney review. They do not
-            decide legal correctness.
+            These controls are human attestations. They route the matter for
+            attorney review. They do not decide legal correctness,
+            enforceability, or external-send content. Package presets do not
+            automatically check these boxes.
           </div>
 
           <label style={{ display: "block", fontSize: 13, marginTop: 12 }}>
@@ -592,9 +721,16 @@ export default function Home() {
             }}
           />
 
-          <label style={{ display: "block", fontSize: 13 }}>
+          <label
+            style={{
+              display: "block",
+              fontSize: 13,
+              color: attorneyApprovalDisabled ? "#6b7280" : "#e5e7eb",
+            }}
+          >
             <input
               type="checkbox"
+              disabled={attorneyApprovalDisabled}
               checked={form.attorneyApprovedForExternalDelivery}
               onChange={(e) =>
                 set("attorneyApprovedForExternalDelivery", e.target.checked)
@@ -604,9 +740,29 @@ export default function Home() {
             Attorney approved this draft for external delivery.
           </label>
           <div style={{ ...hintStyle, marginTop: 6 }}>
-            Send-control only. Praxis still does not generate an external
-            response.
+            This is a send-control status only. It can only be checked when
+            Reviewer Type is Attorney. In First Pass and Attorney Review
+            Package mode, an unchecked S7 may remain visible internally without
+            blocking the package. In External Delivery Check mode, unchecked S7
+            creates a Do Not Send block. Praxis still does not generate an
+            external response.
           </div>
+
+          {attorneyApprovalDisabled && (
+            <div style={warningBoxStyle}>
+              Attorney approval is disabled because Reviewer Type is{" "}
+              {form.reviewerType}. Change Reviewer Type to Attorney to assert
+              attorney-approved external delivery status.
+            </div>
+          )}
+
+          {externalDeliveryWarning && (
+            <div style={warningBoxStyle}>
+              External Delivery Check is selected, but attorney-approved
+              external delivery has not been confirmed. The memo should route
+              this as Do Not Send until attorney approval is confirmed.
+            </div>
+          )}
         </section>
 
         <section style={{ marginTop: 18 }}>
@@ -622,20 +778,11 @@ export default function Home() {
             <section style={cardStyle}>
               <div style={cardHeaderStyle}>Advanced</div>
 
-              <label style={labelStyle}>Workflow Mode</label>
-              <select
-                style={inputStyle}
-                value={form.mode}
-                onChange={(e) => set("mode", e.target.value)}
-              >
-                {WORKFLOW_MODES.map((mode) => (
-                  <option key={mode} value={mode}>
-                    {mode}
-                  </option>
-                ))}
-              </select>
-
               <label style={labelStyle}>Human Process Notes</label>
+              <div style={hintStyle}>
+                Optional internal notes. These notes are included in the
+                attorney-review memo for workflow context.
+              </div>
               <textarea
                 style={textareaStyle}
                 rows={5}

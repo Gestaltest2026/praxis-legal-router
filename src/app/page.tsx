@@ -367,6 +367,18 @@ export default function Home() {
             Paste the matter materials. Praxis flags blockers and prepares an
             attorney-review memo. No legal advice. Nothing is sent externally.
           </p>
+          <a
+            href="/retainer"
+            style={{
+              display: "inline-block",
+              marginTop: 12,
+              color: "#93c5fd",
+              fontSize: 13,
+              fontWeight: 700,
+            }}
+          >
+            Open Retainer Production Pilot →
+          </a>
         </header>
 
         <section style={cardStyle}>

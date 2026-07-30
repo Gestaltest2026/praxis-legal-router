@@ -444,6 +444,23 @@ export default function Home() {
             does not give legal advice, decide enforceability, generate
             external-send language, or send anything externally.
           </p>
+          <a
+            href="/retainer"
+            style={{
+              display: "inline-block",
+              marginTop: 14,
+              padding: "10px 14px",
+              border: "1px solid #1d4ed8",
+              borderRadius: 8,
+              background: "#0f1f3d",
+              color: "#bfdbfe",
+              fontSize: 13,
+              fontWeight: 750,
+              textDecoration: "none",
+            }}
+          >
+            Open Retainer Production Pilot →
+          </a>
         </header>
 
         <section style={cardStyle}>

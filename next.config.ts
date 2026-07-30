@@ -1,7 +1,9 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
-  /* config options here */
+  outputFileTracingIncludes: {
+    "/api/retainer/compile": ["./src/templates/retainer/*.b64"],
+  },
 };
 
 export default nextConfig;

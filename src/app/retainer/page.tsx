@@ -1,6 +1,15 @@
 "use client";
 
+import Link from "next/link";
 import { useMemo, useState } from "react";
+import { getProductionModule } from "@/lib/production/modules";
+import { formatAttorneyReviewPacket } from "@/lib/production/reviewPacket";
+import {
+  buildValidationResult,
+  combineValidationResults,
+  validateRequiredInputs,
+} from "@/lib/production/validate";
+import type { ValidationIssue } from "@/lib/production/types";
 
 type FormState = {
   clientName: string;
@@ -77,10 +86,6 @@ function normalizeMoney(value: string) {
   return value.replace(/[$,\s]/g, "").trim();
 }
 
-function required(value: string) {
-  return value.trim().length > 0;
-}
-
 export default function RetainerProductionPage() {
   const [form, setForm] = useState<FormState>(initialForm);
   const [showPacket, setShowPacket] = useState(false);
@@ -88,77 +93,103 @@ export default function RetainerProductionPage() {
   const set = (key: keyof FormState, value: string) =>
     setForm((current) => ({ ...current, [key]: value }));
 
-  const blockers = useMemo(() => {
-    const next: string[] = [];
+  const validation = useMemo(() => {
+    const productionModule = getProductionModule("retainer");
 
-    if (!required(form.clientName)) next.push("Client legal name is missing.");
-    if (!required(form.caseCaption)) next.push("Case caption is missing.");
-    if (!required(form.openingSentence)) {
-      next.push("Page 1 opening sentence is missing.");
+    if (!productionModule) {
+      return buildValidationResult([
+        {
+          id: "retainer-module-missing",
+          severity: "RED",
+          message: "Retainer production module is unavailable.",
+        },
+      ]);
     }
-    if (!required(form.sourceRecord)) {
-      next.push("Authoritative source record is missing.");
-    }
+
+    const requiredResult = validateRequiredInputs(productionModule, form);
+    const issues: ValidationIssue[] = [];
 
     const sourceRetainer = normalizeMoney(form.retainerSource);
     const draftRetainer = normalizeMoney(form.retainerDraft);
     const sourceHourly = normalizeMoney(form.hourlySource);
     const draftHourly = normalizeMoney(form.hourlyDraft);
 
-    if (!sourceRetainer || !draftRetainer) {
-      next.push("Retainer amount requires both source and draft values.");
-    } else if (sourceRetainer !== draftRetainer) {
-      next.push("STOP: Retainer amount does not match the source.");
+    if (sourceRetainer && draftRetainer && sourceRetainer !== draftRetainer) {
+      issues.push({
+        id: "retainer-money-mismatch",
+        severity: "RED",
+        message: "STOP: Retainer amount does not match the source.",
+      });
     }
 
-    if (!sourceHourly || !draftHourly) {
-      next.push("Hourly rate requires both source and draft values.");
-    } else if (sourceHourly !== draftHourly) {
-      next.push("STOP: Hourly rate does not match the source.");
+    if (sourceHourly && draftHourly && sourceHourly !== draftHourly) {
+      issues.push({
+        id: "hourly-money-mismatch",
+        severity: "RED",
+        message: "STOP: Hourly rate does not match the source.",
+      });
     }
 
-    if (required(form.unresolvedIssues)) {
-      next.push("Unresolved issues require attorney review before production.");
+    if (form.unresolvedIssues.trim()) {
+      issues.push({
+        id: "retainer-unresolved",
+        severity: "YELLOW",
+        message: "Unresolved issues require attorney review before production.",
+      });
     }
 
-    return next;
+    return combineValidationResults(
+      requiredResult,
+      buildValidationResult(issues)
+    );
   }, [form]);
 
-  const ready = blockers.length === 0;
+  const blockers = validation.issues.map((issue) => issue.message);
+  const ready = validation.status === "PASS";
 
-  const packet = [
-    "# Praxis Matter Control Sheet",
-    "",
-    "## Fixed Classification",
-    "- Matter: Attorney's Fee Hearing",
-    "- Side: Plaintiff",
-    "- Engagement: Morrie I. Levine, individually",
-    "- Client type: Attorney",
-    "",
-    "## Matter Data",
-    `- Client legal name: ${form.clientName || "(missing)"}`,
-    `- Case caption: ${form.caseCaption || "(missing)"}`,
-    `- Case number: ${form.caseNumber || "(not supplied)"}`,
-    `- Page 1 opening sentence: ${form.openingSentence || "(missing)"}`,
-    "",
-    "## Monetary Verification",
-    `- Retainer — Source: ${form.retainerSource || "(missing)"} | Draft: ${form.retainerDraft || "(missing)"}`,
-    `- Hourly rate — Source: ${form.hourlySource || "(missing)"} | Draft: ${form.hourlyDraft || "(missing)"}`,
-    "",
-    "## Authority and Exceptions",
-    `- Authoritative source: ${form.sourceRecord || "(missing)"}`,
-    `- Unresolved issues: ${form.unresolvedIssues || "None"}`,
-    "",
-    `## Production Status: ${ready ? "READY FOR ATTORNEY REVIEW" : "DO NOT GENERATE"}`,
-    ...(blockers.length ? blockers.map((item) => `- ${item}`) : ["- Deterministic intake checks cleared."]),
-  ].join("\n");
+  const packet = formatAttorneyReviewPacket({
+    title: "Praxis Attorney Review Packet — Retainer Agreement",
+    matterSummary: [
+      "Matter: Attorney's Fee Hearing",
+      "Side: Plaintiff",
+      "Engagement: Morrie I. Levine, individually",
+      "Client type: Attorney",
+      `Client legal name: ${form.clientName || "(missing)"}`,
+      `Case caption: ${form.caseCaption || "(missing)"}`,
+      `Case number: ${form.caseNumber || "(not supplied)"}`,
+    ],
+    sources: [form.sourceRecord || "Authoritative source record missing."],
+    validation,
+    attorneyDecisions: form.unresolvedIssues.trim()
+      ? [form.unresolvedIssues]
+      : [],
+    paralegalNextActions:
+      validation.status === "RED"
+        ? ["Resolve all RED items before document assembly or attorney review."]
+        : validation.status === "YELLOW"
+          ? ["Present the unresolved issue with the controlled draft for attorney decision."]
+          : ["Submit the controlled draft and this packet for attorney review."],
+    additionalSections: [
+      {
+        heading: "Opening Sentence",
+        items: [form.openingSentence || "(missing)"],
+      },
+      {
+        heading: "Monetary Verification",
+        items: [
+          `Retainer — Source: ${form.retainerSource || "(missing)"} | Draft: ${form.retainerDraft || "(missing)"}`,
+          `Hourly rate — Source: ${form.hourlySource || "(missing)"} | Draft: ${form.hourlyDraft || "(missing)"}`,
+        ],
+      },
+    ],
+  });
 
   return (
     <main style={page}>
       <div style={shell}>
-        <a href="/" style={{ color: "#93c5fd", fontSize: 13 }}>
+        <Link href="/" style={{ color: "#93c5fd", fontSize: 13 }}>
           ← Praxis Legal Router
-        </a>
+        </Link>
         <div style={{ marginTop: 18, color: "#93c5fd", fontSize: 12, fontWeight: 800 }}>
           RETAINER PRODUCTION · CONTROLLED PILOT
         </div>
@@ -211,29 +242,29 @@ export default function RetainerProductionPage() {
           <textarea style={{ ...input, minHeight: 90 }} placeholder="Leave blank only if none." value={form.unresolvedIssues} onChange={(e) => set("unresolvedIssues", e.target.value)} />
         </section>
 
-        <section style={{ ...card, borderColor: ready ? "#166534" : "#991b1b" }}>
+        <section style={{ ...card, borderColor: ready ? "#166534" : validation.status === "YELLOW" ? "#a16207" : "#991b1b" }}>
           <h2 style={{ margin: "0 0 8px", fontSize: 16 }}>
-            Status: {ready ? "READY FOR ATTORNEY REVIEW" : "DO NOT GENERATE"}
+            Status: {ready ? "READY FOR ATTORNEY REVIEW" : validation.status === "YELLOW" ? "ATTORNEY DECISION REQUIRED" : "DO NOT GENERATE"}
           </h2>
           {blockers.length ? (
-            <ul style={{ margin: "0 0 0 20px", color: "#fecaca", lineHeight: 1.6 }}>
+            <ul style={{ margin: "0 0 0 20px", color: validation.status === "YELLOW" ? "#fde68a" : "#fecaca", lineHeight: 1.6 }}>
               {blockers.map((item) => <li key={item}>{item}</li>)}
             </ul>
           ) : (
-            <p style={{ margin: 0, color: "#bbf7d0" }}>All deterministic intake checks cleared.</p>
+            <p style={{ margin: 0, color: "#bbf7d0" }}>All shared deterministic validation checks cleared.</p>
           )}
           <button
             type="button"
             onClick={() => setShowPacket(true)}
             style={{ marginTop: 16, padding: "11px 16px", border: 0, borderRadius: 7, background: "#93c5fd", color: "#0b1220", fontWeight: 800, cursor: "pointer" }}
           >
-            Generate Matter Control Sheet
+            Generate Attorney Review Packet
           </button>
         </section>
 
         {showPacket && (
           <section style={card}>
-            <h2 style={{ margin: "0 0 10px", fontSize: 16 }}>Matter Control Sheet</h2>
+            <h2 style={{ margin: "0 0 10px", fontSize: 16 }}>Attorney Review Packet</h2>
             <pre style={{ whiteSpace: "pre-wrap", lineHeight: 1.55, fontSize: 13, background: "#05070a", padding: 16, borderRadius: 8, overflowX: "auto" }}>{packet}</pre>
           </section>
         )}

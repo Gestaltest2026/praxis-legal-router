@@ -1,4 +1,6 @@
 import { NextResponse } from "next/server";
+import { formatAttorneyReviewPacket } from "@/lib/production/reviewPacket";
+import type { ValidationIssue, ValidationResult } from "@/lib/production/types";
 
 type PackageType = "firstPass" | "reviewPackage" | "externalDelivery";
 
@@ -206,7 +208,7 @@ type RawSection = {
   content: string;
 };
 
-type ValidationIssue = {
+type StructuredValidationIssue = {
   field: "partyInfo" | "dealTerms";
   line: number;
   message: string;
@@ -252,496 +254,124 @@ function normalizeText(value: string): string {
 
 function isPlaceholderValue(value: string): boolean {
   const normalized = normalizeText(value);
-
-  return [
-    "-",
-    "—",
-    "–",
-    "tbd",
-    "n/a",
-    "na",
-    "unknown",
-    "unclear",
-    "to be confirmed",
-    "needs confirmation",
-    "pending confirmation",
-    "not confirmed",
-    "要確認",
-    "不明",
-    "未確認",
-    "未定",
-    "確認中",
-  ].includes(normalized);
+  return ["-", "—", "–", "tbd", "unknown", "n/a", "na", "none", "blank"].includes(
+    normalized
+  );
 }
 
-function escapeRegExp(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+function excerpt(value: string, max = 180): string {
+  const clean = value.replace(/\s+/g, " ").trim();
+  return clean.length <= max ? clean : `${clean.slice(0, max - 1)}…`;
 }
 
-function termToRegex(term: string): RegExp {
-  const normalized = normalizeText(term);
-  const escaped = escapeRegExp(normalized).replace(/\s+/g, "\\s+");
-
-  const startsWord = /^[a-z0-9]/i.test(normalized);
-  const endsWord = /[a-z0-9]$/i.test(normalized);
-
-  const prefix = startsWord ? "(^|[^a-z0-9])" : "";
-  const suffix = endsWord ? "($|[^a-z0-9])" : "";
-
-  return new RegExp(`${prefix}${escaped}${suffix}`, "i");
+function normalizePackageType(value?: PackageType): PackageType {
+  return value === "reviewPackage" || value === "externalDelivery"
+    ? value
+    : "firstPass";
 }
 
-function normalizePackageType(value: unknown): PackageType {
-  if (
-    value === "firstPass" ||
-    value === "reviewPackage" ||
-    value === "externalDelivery"
-  ) {
-    return value;
-  }
-
-  return "firstPass";
-}
-
-function isAttorneyReviewer(reviewerType: string): boolean {
-  return normalizeText(reviewerType) === "attorney";
-}
-
-function isExternalDeliveryContext(
-  bodyOrPackageType: RequestBody | PackageType
-): boolean {
-  const packageType =
-    typeof bodyOrPackageType === "string"
-      ? bodyOrPackageType
-      : normalizePackageType(bodyOrPackageType.packageType);
-
+function isExternalDeliveryContext(packageType: PackageType): boolean {
   return packageType === "externalDelivery";
 }
 
 function getPrimaryMatterType(body: RequestBody): string {
-  return body.primaryMatterType || body.matterTypes[0] || "";
+  return body.primaryMatterType?.trim() || body.matterTypes[0] || "";
 }
 
-function getRiskFlags(body: RequestBody): string[] {
-  if (Array.isArray(body.riskFlags) && body.riskFlags.length > 0) {
-    return body.riskFlags.filter(Boolean);
-  }
-
-  const primaryMatterType = getPrimaryMatterType(body);
-
-  return body.matterTypes.filter((item) => item && item !== primaryMatterType);
+function parsePipeTable(value: string): string[][] {
+  return splitLines(value)
+    .filter((line) => line.includes("|"))
+    .map((line) => line.split("|").map((cell) => cell.trim()))
+    .filter((cells) => cells.length > 1);
 }
 
-function getSelectedWorkflows(body: RequestBody): string[] {
-  const primaryMatterType = getPrimaryMatterType(body);
-  const riskFlags = getRiskFlags(body);
-
-  return [primaryMatterType, ...riskFlags].filter(Boolean);
+function parseDealTerms(value: string): DealTermRow[] {
+  const rows = parsePipeTable(value);
+  return rows
+    .filter((cells) => normalizeText(cells[0] || "") !== "term")
+    .map((cells) => ({
+      term: cells[0] || "",
+      value: cells[1] || "",
+      provenance: cells[2] || "",
+      raw: cells.join(" | "),
+    }));
 }
 
-function hasRiskFlag(body: RequestBody, flag: string): boolean {
-  const normalizedFlag = normalizeText(flag);
+function validateStructuredInputs(body: RequestBody): StructuredValidationIssue[] {
+  const issues: StructuredValidationIssue[] = [];
+  const partyRows = parsePipeTable(body.partyInfo);
+  const dealRows = parsePipeTable(body.dealTerms);
 
-  return getRiskFlags(body).some(
-    (item) => normalizeText(item) === normalizedFlag
-  );
+  partyRows.forEach((cells, index) => {
+    if (index === 0 && normalizeText(cells[0] || "") === "name") return;
+    if (cells.length < 6 || cells.some((cell) => !cell.trim())) {
+      issues.push({
+        field: "partyInfo",
+        line: index + 1,
+        message: "Each party row must contain six nonblank columns.",
+        value: cells.join(" | "),
+      });
+    }
+  });
+
+  dealRows.forEach((cells, index) => {
+    if (index === 0 && normalizeText(cells[0] || "") === "term") return;
+    if (cells.length < 3 || cells.some((cell) => !cell.trim())) {
+      issues.push({
+        field: "dealTerms",
+        line: index + 1,
+        message: "Each deal-term row must contain term, value, and provenance.",
+        value: cells.join(" | "),
+      });
+    }
+  });
+
+  return issues;
 }
 
-function stopStatus(
-  stopConditions: StopCondition[],
-  id: StopCondition["id"]
-): StopStatus | undefined {
-  return stopConditions.find((stop) => stop.id === id)?.status;
-}
-
-function stopMessage(
-  stopConditions: StopCondition[],
-  id: StopCondition["id"]
-): string {
-  return stopConditions.find((stop) => stop.id === id)?.message || "";
-}
-
-function findOldMatterHits(
-  currentDraft: string,
-  oldMatterTerms: string
-): string[] {
-  if (!currentDraft || !oldMatterTerms) return [];
-
+function findOldMatterHits(currentDraft: string, oldMatterTerms: string): string[] {
   const normalizedDraft = normalizeText(currentDraft);
+  return splitLines(oldMatterTerms).filter((term) => {
+    const normalized = normalizeText(term);
+    return normalized.length >= 2 && normalizedDraft.includes(normalized);
+  });
+}
 
-  return splitLines(oldMatterTerms).filter((term) =>
-    termToRegex(term).test(normalizedDraft)
+function findUnresolvedDealTerms(value: string): DealTermRow[] {
+  return parseDealTerms(value).filter((row) => {
+    const provenance = normalizeText(row.provenance);
+    return !provenance || ["unknown", "inherited", "tbd", "blank"].includes(provenance);
+  });
+}
+
+function parseRawSections(value: string): RawSection[] {
+  const pattern = /^---\s*(.+?)\s*---$/gm;
+  const matches = [...value.matchAll(pattern)];
+  if (!matches.length) return [];
+
+  return matches.map((match, index) => ({
+    heading: match[1].trim(),
+    content: value
+      .slice(match.index! + match[0].length, matches[index + 1]?.index ?? value.length)
+      .trim(),
+  }));
+}
+
+function detectAttorneyInstruction(value: string): boolean {
+  return parseRawSections(value).some(
+    (section) =>
+      normalizeText(section.heading).includes("attorney instruction") &&
+      section.content.trim().length > 0
   );
-}
-
-function isEntityType(value: string): boolean {
-  return /entity|llc|company|corporation|corp|法人|会社/i.test(value);
-}
-
-function isIndividualType(value: string): boolean {
-  return /individual|person|natural person|個人/i.test(value);
-}
-
-function validateRequiredPartyCell(args: {
-  issues: ValidationIssue[];
-  lineNumber: number;
-  rowLine: string;
-  columnName: string;
-  value: string;
-}) {
-  const { issues, lineNumber, rowLine, columnName, value } = args;
-
-  if (!value) {
-    issues.push({
-      field: "partyInfo",
-      line: lineNumber,
-      message: `Party Information row is missing ${columnName}.`,
-      value: rowLine,
-    });
-
-    return;
-  }
-
-  if (isPlaceholderValue(value)) {
-    issues.push({
-      field: "partyInfo",
-      line: lineNumber,
-      message: `Party Information row has placeholder ${columnName}.`,
-      value: rowLine,
-    });
-  }
-}
-
-function validatePartyInfoTable(partyInfo: string): ValidationIssue[] {
-  const issues: ValidationIssue[] = [];
-  const lines = splitLines(partyInfo);
-
-  const rows = lines
-    .map((line, index) => ({ line, lineNumber: index + 1 }))
-    .filter((row) => !/^name\s*\|/i.test(row.line));
-
-  if (rows.length === 0) {
-    issues.push({
-      field: "partyInfo",
-      line: 0,
-      message:
-        "Party Information table must include at least one party row after the header.",
-      value: partyInfo,
-    });
-
-    return issues;
-  }
-
-  rows.forEach((row) => {
-    const parts = row.line.split("|").map((part) => part.trim());
-
-    if (parts.length < 6) {
-      issues.push({
-        field: "partyInfo",
-        line: row.lineNumber,
-        message:
-          "Party Information row must have 6 columns: Name | Type | Capacity | Address | Signer | Initials.",
-        value: row.line,
-      });
-
-      return;
-    }
-
-    const [name, type, capacity, address, signer, initials] = parts;
-
-    validateRequiredPartyCell({
-      issues,
-      lineNumber: row.lineNumber,
-      rowLine: row.line,
-      columnName: "Name",
-      value: name,
-    });
-
-    validateRequiredPartyCell({
-      issues,
-      lineNumber: row.lineNumber,
-      rowLine: row.line,
-      columnName: "Type",
-      value: type,
-    });
-
-    if (
-      type &&
-      !isPlaceholderValue(type) &&
-      !isEntityType(type) &&
-      !isIndividualType(type)
-    ) {
-      issues.push({
-        field: "partyInfo",
-        line: row.lineNumber,
-        message:
-          "Party Type must be recognizable as entity/company/LLC/corporation or individual/person.",
-        value: row.line,
-      });
-    }
-
-    validateRequiredPartyCell({
-      issues,
-      lineNumber: row.lineNumber,
-      rowLine: row.line,
-      columnName: "Capacity",
-      value: capacity,
-    });
-
-    validateRequiredPartyCell({
-      issues,
-      lineNumber: row.lineNumber,
-      rowLine: row.line,
-      columnName: "Address",
-      value: address,
-    });
-
-    validateRequiredPartyCell({
-      issues,
-      lineNumber: row.lineNumber,
-      rowLine: row.line,
-      columnName: "Signer",
-      value: signer,
-    });
-
-    validateRequiredPartyCell({
-      issues,
-      lineNumber: row.lineNumber,
-      rowLine: row.line,
-      columnName: "Initials",
-      value: initials,
-    });
-  });
-
-  return issues;
-}
-
-function validateDealTermsTable(dealTerms: string): ValidationIssue[] {
-  const issues: ValidationIssue[] = [];
-  const lines = splitLines(dealTerms);
-
-  const rows = lines
-    .map((line, index) => ({ line, lineNumber: index + 1 }))
-    .filter((row) => !/^term\s*\|/i.test(row.line));
-
-  if (rows.length === 0) {
-    issues.push({
-      field: "dealTerms",
-      line: 0,
-      message:
-        "Deal Terms table must include at least one deal-term row after the header.",
-      value: dealTerms,
-    });
-
-    return issues;
-  }
-
-  rows.forEach((row) => {
-    const parts = row.line.split("|").map((part) => part.trim());
-
-    if (parts.length < 3) {
-      issues.push({
-        field: "dealTerms",
-        line: row.lineNumber,
-        message:
-          "Deal Terms row must have 3 columns: Term | Value | Provenance.",
-        value: row.line,
-      });
-
-      return;
-    }
-
-    const [term, value] = parts;
-
-    if (!term) {
-      issues.push({
-        field: "dealTerms",
-        line: row.lineNumber,
-        message: "Deal Terms row is missing Term.",
-        value: row.line,
-      });
-    }
-
-    if (!value) {
-      issues.push({
-        field: "dealTerms",
-        line: row.lineNumber,
-        message: "Deal Terms row is missing Value.",
-        value: row.line,
-      });
-    }
-  });
-
-  return issues;
-}
-
-function validateStructuredInputs(body: RequestBody): ValidationIssue[] {
-  return [
-    ...validatePartyInfoTable(body.partyInfo),
-    ...validateDealTermsTable(body.dealTerms),
-  ];
-}
-
-function parseDealTerms(dealTerms: string): DealTermRow[] {
-  return splitLines(dealTerms)
-    .filter((line) => !/^term\s*\|/i.test(line))
-    .map((line) => {
-      const parts = line.split("|").map((part) => part.trim());
-
-      return {
-        term: parts[0] || "",
-        value: parts[1] || "",
-        provenance: parts[2] || "",
-        raw: line,
-      };
-    })
-    .filter((row) => row.term || row.value || row.provenance);
-}
-
-function isResolvedProvenance(provenance: string): boolean {
-  const value = normalizeText(provenance);
-
-  return [
-    "instructed",
-    "confirmed",
-    "attorney confirmed",
-    "client confirmed",
-    "responsible reviewer confirmed",
-    "drafting instruction",
-    "final instruction",
-  ].includes(value);
-}
-
-function isUnresolvedProvenance(provenance: string): boolean {
-  const value = normalizeText(provenance);
-
-  if (!value) return true;
-
-  if (isResolvedProvenance(value)) return false;
-
-  if (
-    [
-      "unknown",
-      "inherited",
-      "unclear",
-      "tbd",
-      "to be confirmed",
-      "not confirmed",
-      "needs confirmation",
-      "pending confirmation",
-      "要確認",
-      "不明",
-      "未確認",
-      "未定",
-      "確認中",
-    ].includes(value)
-  ) {
-    return true;
-  }
-
-  return true;
-}
-
-function findUnresolvedDealTerms(dealTerms: string): DealTermRow[] {
-  return parseDealTerms(dealTerms).filter((row) =>
-    isUnresolvedProvenance(row.provenance)
-  );
-}
-
-function parseRawSections(rawMaterials: string): RawSection[] {
-  const text = rawMaterials || "";
-  const markerRegex = /^---\s*([A-Z0-9 _/-]+?)\s*---\s*$/gim;
-  const matches = [...text.matchAll(markerRegex)];
-
-  if (matches.length === 0) {
-    return text.trim()
-      ? [{ heading: "RAW MATERIALS", content: text.trim() }]
-      : [];
-  }
-
-  return matches
-    .map((match, index) => {
-      const heading = (match[1] || "").trim();
-      const start = (match.index || 0) + match[0].length;
-      const end =
-        index + 1 < matches.length
-          ? matches[index + 1].index || text.length
-          : text.length;
-      const content = text.slice(start, end).trim();
-
-      return { heading, content };
-    })
-    .filter((section) => section.heading && section.content);
-}
-
-function sectionLabel(heading: string): SourceDocument["label"] {
-  const normalized = normalizeText(heading);
-
-  if (/client|email/.test(normalized)) return "CLIENT EMAIL";
-  if (/attorney|instruction/.test(normalized)) return "ATTORNEY INSTRUCTION";
-
-  return "REFERENCE";
-}
-
-function sectionDocumentName(heading: string): string {
-  const normalized = normalizeText(heading);
-
-  if (/template/.test(normalized)) return "Template";
-  if (/client|email/.test(normalized)) return "Client Email";
-  if (/attorney|instruction/.test(normalized)) return "Attorney Instruction";
-
-  return heading
-    .toLowerCase()
-    .replace(/\b\w/g, (char) => char.toUpperCase());
-}
-
-function excerpt(value: string, maxLength = 160): string {
-  const compact = value.replace(/\s+/g, " ").trim();
-
-  if (!compact) return "Provided by user.";
-
-  if (compact.length <= maxLength) return compact;
-
-  return `${compact.slice(0, maxLength - 1).trim()}…`;
-}
-
-function detectAttorneyInstruction(rawMaterials: string): boolean {
-  const sections = parseRawSections(rawMaterials);
-
-  return sections.some((section) => {
-    const heading = normalizeText(section.heading);
-
-    return (
-      /attorney|instruction/.test(heading) && section.content.trim().length > 0
-    );
-  });
 }
 
 function findEquityLanguageHits(body: RequestBody): string[] {
-  const haystack = normalizeText(
-    [
-      body.rawMaterials,
-      body.currentDraft,
-      body.dealTerms,
-      body.primaryMatterType || "",
-      getRiskFlags(body).join("\n"),
-      body.matterTypes.join("\n"),
-    ].join("\n")
+  const text = normalizeText(
+    [body.rawMaterials, body.currentDraft, ...(body.riskFlags ?? [])].join(" ")
   );
-
-  const terms = [
-    "membership interest",
-    "membership interests",
-    "membership certificate",
-    "membership certificates",
-    "certificates evidencing",
-    "equity interest",
-    "ownership interest",
-    "member interest",
-    "llc interest",
-  ];
-
-  return terms.filter((term) => termToRegex(term).test(haystack));
+  return ["equity", "membership interest", "ownership interest"].filter((term) =>
+    text.includes(term)
+  );
 }
 
 function buildStopConditions(args: {
@@ -751,441 +381,135 @@ function buildStopConditions(args: {
   hasAttorneyInstruction: boolean;
   equityLanguageHits: string[];
 }): StopCondition[] {
-  const {
-    body,
-    oldMatterHits,
-    unresolvedDealTerms,
-    hasAttorneyInstruction,
-    equityLanguageHits,
-  } = args;
-
-  const reviewerType = body.reviewerType || "Unknown";
-  const reviewerIsAttorney = isAttorneyReviewer(reviewerType);
-
-  const effectiveAttorneyApprovedForExternalDelivery =
-    reviewerIsAttorney && body.attorneyApprovedForExternalDelivery;
-
-  const attemptedNonAttorneyExternalApproval =
-    !reviewerIsAttorney && body.attorneyApprovedForExternalDelivery;
-
-  const equityIssueOpen =
-    equityLanguageHits.length > 0 && !body.equityIssueRoutedToAttorney;
+  const { body, oldMatterHits, unresolvedDealTerms, hasAttorneyInstruction, equityLanguageHits } = args;
+  const packageType = normalizePackageType(body.packageType);
+  const external = isExternalDeliveryContext(packageType);
 
   return [
     {
       id: "S1",
-      condition: "Old/excluded matter term appears in the current draft",
-      status: oldMatterHits.length > 0 ? "OPEN" : "CLEARED",
-      message:
-        oldMatterHits.length > 0
-          ? oldMatterHits.join(", ")
-          : "No old/excluded matter terms found in current draft.",
+      condition: "Old-matter residue",
+      status: oldMatterHits.length ? "OPEN" : "CLEARED",
+      message: oldMatterHits.length
+        ? `Current draft contains old/excluded terms: ${oldMatterHits.join(", ")}.`
+        : "No old/excluded terms detected in the current draft.",
     },
     {
       id: "S2",
-      condition: "Source caption/title parties differ from body parties",
-      status: body.captionBodyConsistencyChecked
-        ? "CLEARED"
-        : "HUMAN CONFIRMATION REQUIRED",
+      condition: "Caption/body consistency",
+      status: body.captionBodyConsistencyChecked ? "CLEARED" : "HUMAN CONFIRMATION REQUIRED",
       message: body.captionBodyConsistencyChecked
-        ? `Caption/body party consistency check confirmed by ${reviewerType} reviewer input.`
-        : "Human confirmation required: evaluate whether any source caption/title parties differ from body parties.",
+        ? "Human reviewer confirmed caption/body consistency."
+        : "Human reviewer must confirm that caption/title parties match body parties.",
     },
     {
       id: "S3",
-      condition:
-        "Deal term provenance is unresolved, unconfirmed, inherited, unknown, or blank",
-      status: unresolvedDealTerms.length > 0 ? "OPEN" : "CLEARED",
-      message:
-        unresolvedDealTerms.length > 0
-          ? unresolvedDealTerms
-              .map(
-                (row) =>
-                  `${row.term || "(blank term)"} (${
-                    row.provenance || "blank"
-                  })`
-              )
-              .join(", ")
-          : "No unresolved deal-term provenance found.",
+      condition: "Deal-term provenance",
+      status: unresolvedDealTerms.length ? "OPEN" : "CLEARED",
+      message: unresolvedDealTerms.length
+        ? "One or more deal terms have unresolved provenance."
+        : "Deal-term provenance is resolved.",
     },
     {
       id: "S4",
-      condition: "Deadline status unresolved",
-      status:
-        !body.deadline && !body.deadlineIntentionallyBlank
-          ? "OPEN"
-          : "CLEARED",
-      message:
-        !body.deadline && !body.deadlineIntentionallyBlank
-          ? "Deadline is blank and no responsible reviewer has confirmed that it should remain blank or not applicable."
-          : body.deadline
-          ? `Deadline supplied by ${reviewerType} reviewer input.`
-          : `Blank/not-applicable deadline status confirmed by ${reviewerType} reviewer input.`,
+      condition: "Deadline status",
+      status: body.deadline.trim() || body.deadlineIntentionallyBlank ? "CLEARED" : "OPEN",
+      message: body.deadline.trim()
+        ? `Deadline recorded: ${body.deadline}.`
+        : body.deadlineIntentionallyBlank
+          ? "Deadline intentionally confirmed blank or not applicable."
+          : "Deadline is blank without responsible-reviewer confirmation.",
     },
     {
       id: "S5",
-      condition: "Party missing name, address, capacity, signer, or initials",
+      condition: "Required structured inputs",
       status: "CLEARED",
-      message:
-        "Party Information table passed deterministic validation for required columns, non-empty cells, and non-placeholder required values.",
+      message: "Structured party and deal-term input validation cleared.",
     },
     {
       id: "S6",
-      condition: "No attorney instruction found in Raw Materials",
+      condition: "Attorney instruction",
       status: hasAttorneyInstruction ? "CLEARED" : "OPEN",
       message: hasAttorneyInstruction
-        ? "ATTORNEY INSTRUCTION section found."
-        : "No ATTORNEY INSTRUCTION section found.",
+        ? "Attorney instruction section found."
+        : "No populated ATTORNEY INSTRUCTION section was found.",
     },
     {
       id: "S7",
-      condition: "Draft not confirmed attorney-approved for external delivery",
-      status: effectiveAttorneyApprovedForExternalDelivery ? "CLEARED" : "OPEN",
-      message: effectiveAttorneyApprovedForExternalDelivery
-        ? "Attorney-approved external delivery status confirmed by Attorney reviewer input."
-        : attemptedNonAttorneyExternalApproval
-        ? `External-delivery approval was checked by ${reviewerType} reviewer input and was not treated as attorney approval.`
-        : "Draft not confirmed attorney-approved for external delivery.",
+      condition: "External-delivery approval",
+      status:
+        external && !(body.reviewerType === "Attorney" && body.attorneyApprovedForExternalDelivery)
+          ? "OPEN"
+          : "CLEARED",
+      message: external
+        ? body.reviewerType === "Attorney" && body.attorneyApprovedForExternalDelivery
+          ? "Attorney approval for this exact external-delivery draft is recorded."
+          : "External delivery is not cleared by an Attorney reviewer."
+        : "Not in external-delivery context.",
     },
     {
       id: "S8",
-      condition: "Equity or membership-interest language appears",
-      status: equityIssueOpen ? "OPEN" : "CLEARED",
+      condition: "Equity issue routing",
+      status:
+        equityLanguageHits.length && !body.equityIssueRoutedToAttorney ? "OPEN" : "CLEARED",
       message:
-        equityLanguageHits.length === 0
-          ? "No equity or membership-interest language found."
-          : body.equityIssueRoutedToAttorney
-          ? `Equity/membership-interest language routed to attorney review by ${reviewerType} reviewer input: ${equityLanguageHits.join(
-              ", "
-            )}`
-          : equityLanguageHits.join(", "),
+        equityLanguageHits.length && !body.equityIssueRoutedToAttorney
+          ? `Equity-adjacent language detected: ${equityLanguageHits.join(", ")}.`
+          : "No unrouted equity-adjacent issue remains.",
     },
   ];
 }
 
-function makeRoute(args: {
-  id: RouteId;
-  route: string;
-  owner: RouteOwner;
-  priority: RoutePriority;
-  reason: string;
-  nextAction: string;
-  triggeredBy: string[];
-}): WorkflowRoute {
-  return args;
-}
+function buildExecutiveStatus(stops: StopCondition[], packageType: PackageType): ExecutiveStatus {
+  const red = stops.some((stop) => stop.status === "OPEN" && ["S1", "S4", "S7", "S8"].includes(stop.id));
+  const yellow = stops.some((stop) => stop.status !== "CLEARED");
 
-function promotePriority(priority: RoutePriority): RoutePriority {
-  if (priority === "Normal") return "High";
-  if (priority === "High") return "Critical";
-  return "Critical";
-}
-
-function applyUrgencyModifier(
-  routes: WorkflowRoute[],
-  body: RequestBody
-): WorkflowRoute[] {
-  if (!hasRiskFlag(body, "Urgent deadline")) return routes;
-
-  return routes.map((route) => ({
-    ...route,
-    priority: promotePriority(route.priority),
-    triggeredBy: [...route.triggeredBy, "riskFlag: Urgent deadline"],
-  }));
-}
-
-function routeOrderIndex(id: RouteId): number {
-  const index = ROUTE_ORDER.indexOf(id);
-  return index === -1 ? ROUTE_ORDER.length : index;
-}
-
-function sortRoutes(routes: WorkflowRoute[]): WorkflowRoute[] {
-  return [...routes].sort((a, b) => {
-    const priorityDiff = PRIORITY_RANK[a.priority] - PRIORITY_RANK[b.priority];
-
-    if (priorityDiff !== 0) return priorityDiff;
-
-    return routeOrderIndex(a.id) - routeOrderIndex(b.id);
-  });
-}
-
-function sortAttorneyDecisionCards(
-  cards: AttorneyDecisionCard[]
-): AttorneyDecisionCard[] {
-  return [...cards].sort(
-    (a, b) => PRIORITY_RANK[a.priority] - PRIORITY_RANK[b.priority]
-  );
-}
-
-function buildProfessionalWorkflowRoutes(args: {
-  body: RequestBody;
-  stopConditions: StopCondition[];
-  unresolvedDealTerms: DealTermRow[];
-  equityLanguageHits: string[];
-}): WorkflowRoute[] {
-  const { body, stopConditions, unresolvedDealTerms, equityLanguageHits } =
-    args;
-  const routes: WorkflowRoute[] = [];
-  const packageType = normalizePackageType(body.packageType);
-
-  if (stopStatus(stopConditions, "S1") === "OPEN") {
-    routes.push(
-      makeRoute({
-        id: "R1_QUARANTINE_CLEANUP",
-        route: "Draft quarantine / old-matter cleanup",
-        owner: "Internal QA",
-        priority: "Critical",
-        reason: `Old/excluded matter residue was detected in the current draft: ${stopMessage(
-          stopConditions,
-          "S1"
-        )}.`,
-        nextAction:
-          "Quarantine current draft, identify listed term locations, clean, and rerun safety gate before attorney review.",
-        triggeredBy: ["S1 OPEN"],
-      })
-    );
-  }
-
-  if (
-    packageType === "externalDelivery" &&
-    stopStatus(stopConditions, "S7") === "OPEN"
-  ) {
-    routes.push(
-      makeRoute({
-        id: "R12_EXTERNAL_DELIVERY_CHECK",
-        route: "External delivery approval check",
-        owner: "Attorney",
-        priority: "Critical",
-        reason:
-          "This package is in external delivery context and attorney approval is not confirmed.",
-        nextAction:
-          "Obtain attorney approval confirmation before any external delivery; no external response generated by Praxis.",
-        triggeredBy: ["packageType: externalDelivery", "S7 OPEN"],
-      })
-    );
-  }
-
-  if (hasRiskFlag(body, "Missing party or address information")) {
-    routes.push(
-      makeRoute({
-        id: "R10_MISSING_PARTY_FOLLOWUP",
-        route: "Missing party information follow-up",
-        owner: "Client Follow-Up",
-        priority: "High",
-        reason:
-          "The matter profile indicates missing party or address information.",
-        nextAction:
-          "Request missing party details from client; log follow-up date; bracket affected sections until received.",
-        triggeredBy: ["riskFlag: Missing party or address information"],
-      })
-    );
-  }
-
-  if (stopStatus(stopConditions, "S3") === "OPEN") {
-    routes.push(
-      makeRoute({
-        id: "R4_DEAL_TERM_CONFIRMATION",
-        route: "Deal-term provenance confirmation",
-        owner: "Attorney",
-        priority: "High",
-        reason: `One or more deal terms have unresolved provenance: ${unresolvedDealTerms
-          .map((row) => `${row.term} (${row.provenance || "blank"})`)
-          .join(", ")}.`,
-        nextAction:
-          "Route unresolved terms for attorney review; confirm with responsible owner; update provenance and rerun safety gate.",
-        triggeredBy: ["S3 OPEN"],
-      })
-    );
-  }
-
-  if (stopStatus(stopConditions, "S4") === "OPEN") {
-    routes.push(
-      makeRoute({
-        id: "R5_DEADLINE_RESOLUTION",
-        route: "Deadline resolution",
-        owner: "Paralegal",
-        priority: "High",
-        reason:
-          "Deadline is blank and blank/not-applicable status is not confirmed.",
-        nextAction:
-          "Confirm deadline with responsible owner, or confirm blank/not-applicable status; rerun safety gate.",
-        triggeredBy: ["S4 OPEN"],
-      })
-    );
-  }
-
-  if (stopStatus(stopConditions, "S8") === "OPEN") {
-    routes.push(
-      makeRoute({
-        id: "R7_EQUITY_ROUTING",
-        route: "Equity/membership issue routing",
-        owner: "Attorney",
-        priority: "High",
-        reason: `Equity or membership-interest language was detected: ${equityLanguageHits.join(
-          ", "
-        )}.`,
-        nextAction:
-          "Route detected language for attorney review: return-of-property language, ownership-interest language, or outside NDA workflow.",
-        triggeredBy: ["S8 OPEN"],
-      })
-    );
-  }
-
-  if (stopStatus(stopConditions, "S2") === "HUMAN CONFIRMATION REQUIRED") {
-    routes.push(
-      makeRoute({
-        id: "R3_CAPTION_BODY_CHECK",
-        route: "Caption/body consistency check",
-        owner: "Paralegal",
-        priority: "High",
-        reason:
-          "Caption/title party consistency with body parties has not been confirmed.",
-        nextAction:
-          "Run caption/title vs. body party comparison; check control when confirmed; rerun safety gate.",
-        triggeredBy: ["S2 HUMAN CONFIRMATION REQUIRED"],
-      })
-    );
-  }
-
-  if (stopStatus(stopConditions, "S6") === "OPEN") {
-    routes.push(
-      makeRoute({
-        id: "R6_ATTORNEY_INSTRUCTION_CAPTURE",
-        route: "Attorney instruction capture",
-        owner: "Paralegal",
-        priority: "Normal",
-        reason:
-          "No ATTORNEY INSTRUCTION section was found in the raw materials.",
-        nextAction:
-          "Obtain and paste the attorney instruction into Raw Materials so the assumed objective is replaced by a documented one.",
-        triggeredBy: ["S6 OPEN"],
-      })
-    );
-  }
-
-  if (hasRiskFlag(body, "Restrictive covenant / non-compete")) {
-    routes.push(
-      makeRoute({
-        id: "R8_RESTRICTIVE_COVENANT_REVIEW",
-        route: "Restrictive covenant / non-compete issue list",
-        owner: "Attorney",
-        priority: "Normal",
-        reason:
-          "The matter profile includes restrictive covenant or non-compete risk.",
-        nextAction:
-          "Prepare issue list for restrictive covenant terms; route for attorney review.",
-        triggeredBy: ["riskFlag: Restrictive covenant / non-compete"],
-      })
-    );
-  }
-
-  if (hasRiskFlag(body, "Multiple individual signers")) {
-    routes.push(
-      makeRoute({
-        id: "R9_MULTI_SIGNER_EXECUTION",
-        route: "Multi-signer execution formatting",
-        owner: "Paralegal",
-        priority: "Normal",
-        reason: "The matter profile includes multiple individual signers.",
-        nextAction:
-          "Reconcile signature blocks, per-page initials, and capacity language against the party table.",
-        triggeredBy: ["riskFlag: Multiple individual signers"],
-      })
-    );
-  }
-
-  if (routes.length === 0) {
-    const readyRouteByPackage: Record<
-      PackageType,
-      {
-        route: string;
-        reason: string;
-        nextAction: string;
-      }
-    > = {
-      firstPass: {
-        route: "First-pass scan complete",
-        reason:
-          "No open deterministic route triggers were detected in the first-pass issue scan.",
-        nextAction:
-          "Prepare attorney-review package or proceed to the next internal workflow step; no external response generated by Praxis.",
-      },
-      reviewPackage: {
-        route: "Attorney-review package ready",
-        reason:
-          "No open deterministic route triggers were detected for the attorney-review package.",
-        nextAction:
-          "Attorney reviews package; no external response generated by Praxis.",
-      },
-      externalDelivery: {
-        route: "External-delivery check ready",
-        reason:
-          "No open deterministic route triggers were detected for the external-delivery check.",
-        nextAction:
-          "Confirm final attorney-controlled delivery process outside Praxis; no external response generated by Praxis.",
-      },
+  if (red) {
+    return {
+      status: packageType === "externalDelivery" ? "Do Not Send" : "Attorney Review Required",
+      reason: "One or more blocking or attorney-controlled conditions remain open.",
     };
-
-    const readyRoute = readyRouteByPackage[packageType];
-
-    routes.push(
-      makeRoute({
-        id: "R0_READY_FOR_ATTORNEY_REVIEW",
-        route: readyRoute.route,
-        owner: "Attorney",
-        priority: "Normal",
-        reason: readyRoute.reason,
-        nextAction: readyRoute.nextAction,
-        triggeredBy: [
-          "No workflow route triggers",
-          `packageType: ${packageType}`,
-        ],
-      })
-    );
   }
 
-  return sortRoutes(applyUrgencyModifier(routes, body));
+  if (yellow) {
+    return {
+      status: "Attorney Review Required",
+      reason: "Human confirmation or attorney decision remains required.",
+    };
+  }
+
+  return {
+    status: "Ready for Attorney Review",
+    reason: "Deterministic and recorded human controls are cleared.",
+  };
 }
 
-function deriveReadiness(
-  routes: WorkflowRoute[],
-  packageType: PackageType
-): PackageReadiness {
-  if (packageType === "externalDelivery") {
-    return "EXTERNAL_DELIVERY_CHECK_REQUIRED";
-  }
+function buildCriticalBlocks(stops: StopCondition[], packageType: PackageType): CriticalBlock[] {
+  return stops
+    .filter((stop) => stop.status === "OPEN" && (packageType === "externalDelivery" || stop.id !== "S7"))
+    .map((stop) => ({
+      id: stop.id,
+      issue: stop.condition,
+      impact: stop.message,
+      owner: ["S7", "S8"].includes(stop.id) ? "Attorney" : "Paralegal / Internal QA",
+    }));
+}
 
-  if (routes.some((route) => route.id === "R1_QUARANTINE_CLEANUP")) {
-    return "CLEANUP_REQUIRED";
-  }
+function buildMatterSnapshot(body: RequestBody): MatterSnapshot {
+  const rows = parsePipeTable(body.partyInfo).filter(
+    (cells) => normalizeText(cells[0] || "") !== "name"
+  );
 
-  if (
-    routes.some((route) =>
-      [
-        "R3_CAPTION_BODY_CHECK",
-        "R5_DEADLINE_RESOLUTION",
-        "R6_ATTORNEY_INSTRUCTION_CAPTURE",
-        "R9_MULTI_SIGNER_EXECUTION",
-        "R10_MISSING_PARTY_FOLLOWUP",
-      ].includes(route.id)
-    )
-  ) {
-    return "CONFIRMATIONS_PENDING";
-  }
-
-  if (
-    routes.some((route) =>
-      [
-        "R4_DEAL_TERM_CONFIRMATION",
-        "R7_EQUITY_ROUTING",
-        "R8_RESTRICTIVE_COVENANT_REVIEW",
-      ].includes(route.id)
-    )
-  ) {
-    return "ATTORNEY_ISSUE_LIST_READY";
-  }
-
-  return "ATTORNEY_REVIEW_PACKAGE_READY";
+  return {
+    currentEntities: rows
+      .filter((cells) => normalizeText(cells[1] || "").includes("entity"))
+      .map((cells) => cells[0]),
+    currentIndividuals: rows
+      .filter((cells) => normalizeText(cells[1] || "").includes("individual"))
+      .map((cells) => cells[0]),
+    selectedWorkflows: [getPrimaryMatterType(body), ...(body.riskFlags ?? [])].filter(Boolean),
+    dealTerms: parseDealTerms(body.dealTerms),
+  };
 }
 
 function buildWorkflowRoutePlan(args: {
@@ -1194,191 +518,55 @@ function buildWorkflowRoutePlan(args: {
   unresolvedDealTerms: DealTermRow[];
   equityLanguageHits: string[];
 }): WorkflowRoutePlan {
-  const packageContext = normalizePackageType(args.body.packageType);
-  const routes = buildProfessionalWorkflowRoutes(args);
-  const [primary, ...secondary] = routes;
+  const { body, stopConditions, unresolvedDealTerms, equityLanguageHits } = args;
+  const routes: WorkflowRoute[] = [];
 
-  if (!primary) {
-    throw new Error("No workflow routes generated.");
+  const add = (route: WorkflowRoute) => routes.push(route);
+  const open = (id: StopCondition["id"]) =>
+    stopConditions.some((stop) => stop.id === id && stop.status !== "CLEARED");
+
+  if (open("S1"))
+    add({ id: "R1_QUARANTINE_CLEANUP", route: "Quarantine and cleanup", owner: "Internal QA", priority: "Critical", reason: "Old-matter residue detected.", nextAction: "Remove or quarantine old-matter terms before drafting.", triggeredBy: ["S1"] });
+  if (open("S7"))
+    add({ id: "R12_EXTERNAL_DELIVERY_CHECK", route: "External delivery hold", owner: "Attorney", priority: "Critical", reason: "Attorney approval is not recorded.", nextAction: "Do not send externally until approval is recorded.", triggeredBy: ["S7"] });
+  if ((body.riskFlags ?? []).includes("Missing party or address information"))
+    add({ id: "R10_MISSING_PARTY_FOLLOWUP", route: "Missing party follow-up", owner: "Client Follow-Up", priority: "High", reason: "Party or address information is flagged missing.", nextAction: "Obtain and source-verify missing identity information.", triggeredBy: ["Risk flag"] });
+  if (unresolvedDealTerms.length)
+    add({ id: "R4_DEAL_TERM_CONFIRMATION", route: "Deal-term confirmation", owner: "Attorney", priority: "High", reason: "Deal-term provenance remains unresolved.", nextAction: "Approve, revise, remove, or request confirmation for each term.", triggeredBy: ["S3"] });
+  if (open("S4"))
+    add({ id: "R5_DEADLINE_RESOLUTION", route: "Deadline resolution", owner: "Paralegal", priority: "High", reason: "Deadline status is unresolved.", nextAction: "Supply or responsibly confirm blank/not applicable.", triggeredBy: ["S4"] });
+  if (open("S8") || equityLanguageHits.length)
+    add({ id: "R7_EQUITY_ROUTING", route: "Equity issue routing", owner: "Attorney", priority: "High", reason: "Equity-adjacent language is present.", nextAction: "Determine whether separate ownership-rights review is required.", triggeredBy: ["S8"] });
+  if (open("S2"))
+    add({ id: "R3_CAPTION_BODY_CHECK", route: "Caption/body consistency check", owner: "Paralegal", priority: "High", reason: "Human confirmation is not recorded.", nextAction: "Compare caption/title parties against body parties.", triggeredBy: ["S2"] });
+  if (open("S6"))
+    add({ id: "R6_ATTORNEY_INSTRUCTION_CAPTURE", route: "Attorney instruction capture", owner: "Attorney", priority: "Normal", reason: "Attorney instruction is absent.", nextAction: "Record the instruction governing this package.", triggeredBy: ["S6"] });
+  if ((body.riskFlags ?? []).includes("Restrictive covenant / non-compete"))
+    add({ id: "R8_RESTRICTIVE_COVENANT_REVIEW", route: "Restrictive-covenant review", owner: "Attorney", priority: "High", reason: "Restrictive covenant is flagged.", nextAction: "Review scope and enforceability separately.", triggeredBy: ["Risk flag"] });
+  if ((body.riskFlags ?? []).includes("Multiple individual signers"))
+    add({ id: "R9_MULTI_SIGNER_EXECUTION", route: "Multi-signer execution", owner: "Paralegal", priority: "Normal", reason: "Multiple individual signers are present.", nextAction: "Confirm capacities, signature blocks, and initials.", triggeredBy: ["Risk flag"] });
+
+  if (!routes.length) {
+    routes.push({ id: "R0_READY_FOR_ATTORNEY_REVIEW", route: "Ready for attorney review", owner: "Attorney", priority: "Normal", reason: "No unresolved production route was detected.", nextAction: "Review the controlled package.", triggeredBy: ["All checks cleared"] });
   }
 
-  return {
-    primary,
-    secondary,
-    readiness: deriveReadiness(routes, packageContext),
-    packageContext,
-  };
-}
-
-function buildDraftResponse(
-  stopConditions: StopCondition[],
-  packageType: PackageType
-): string {
-  const doNotSendStops = stopConditions.filter((stop) => {
-    if (stop.status !== "OPEN") return false;
-    if (stop.id === "S1") return true;
-    if (stop.id === "S7") return isExternalDeliveryContext(packageType);
-    return false;
+  routes.sort((a, b) => {
+    const priority = PRIORITY_RANK[a.priority] - PRIORITY_RANK[b.priority];
+    return priority || ROUTE_ORDER.indexOf(a.id) - ROUTE_ORDER.indexOf(b.id);
   });
 
-  if (doNotSendStops.length === 0) {
-    return "Not produced — external response generation is disabled in this workflow.";
-  }
+  const packageType = normalizePackageType(body.packageType);
+  const readiness: PackageReadiness = open("S1")
+    ? "CLEANUP_REQUIRED"
+    : open("S7")
+      ? "EXTERNAL_DELIVERY_CHECK_REQUIRED"
+      : routes.some((route) => route.owner === "Attorney")
+        ? "ATTORNEY_ISSUE_LIST_READY"
+        : routes.length > 1
+          ? "CONFIRMATIONS_PENDING"
+          : "ATTORNEY_REVIEW_PACKAGE_READY";
 
-  const reason = doNotSendStops
-    .map((stop) => `${stop.id} ${stop.message}`)
-    .join("; ");
-
-  return `Not produced — ${reason}`;
-}
-
-function buildExecutiveStatus(
-  stopConditions: StopCondition[],
-  packageType: PackageType
-): ExecutiveStatus {
-  const s1Open = stopConditions.some(
-    (stop) => stop.id === "S1" && stop.status === "OPEN"
-  );
-
-  const s7ExternalDeliveryOpen =
-    isExternalDeliveryContext(packageType) &&
-    stopConditions.some(
-      (stop) => stop.id === "S7" && stop.status === "OPEN"
-    );
-
-  if (s1Open) {
-    return {
-      status: "Do Not Send",
-      reason:
-        "Old-matter residue was detected in the current draft. Quarantine and cleanup are required before attorney review or external delivery.",
-    };
-  }
-
-  if (s7ExternalDeliveryOpen) {
-    return {
-      status: "Do Not Send",
-      reason:
-        "External-delivery approval has not been confirmed. Do not use the draft externally until attorney approval is recorded.",
-    };
-  }
-
-  const reviewRequired = stopConditions.some((stop) => {
-    if (
-      stop.status !== "OPEN" &&
-      stop.status !== "HUMAN CONFIRMATION REQUIRED"
-    ) {
-      return false;
-    }
-
-    if (stop.id === "S7" && !isExternalDeliveryContext(packageType)) {
-      return false;
-    }
-
-    return true;
-  });
-
-  if (reviewRequired && packageType === "firstPass") {
-    return {
-      status: "Attorney Review Required",
-      reason:
-        "First-pass issue scan found open or human-confirmation-required workflow items. Triage the routes before drafting or delivery.",
-    };
-  }
-
-  if (reviewRequired && packageType === "reviewPackage") {
-    return {
-      status: "Attorney Review Required",
-      reason:
-        "Attorney-review package has open workflow items that should be resolved or routed before review completion.",
-    };
-  }
-
-  if (reviewRequired && packageType === "externalDelivery") {
-    return {
-      status: "Attorney Review Required",
-      reason:
-        "External-delivery check found open workflow items. Resolve or route these items before external delivery.",
-    };
-  }
-
-  if (packageType === "firstPass") {
-    return {
-      status: "Ready for Attorney Review",
-      reason:
-        "First-pass scan found no open deterministic blocks; an attorney-review package may be prepared.",
-    };
-  }
-
-  if (packageType === "reviewPackage") {
-    return {
-      status: "Ready for Attorney Review",
-      reason:
-        "Attorney-review package is assembled. External delivery remains disabled in this workflow.",
-    };
-  }
-
-  return {
-    status: "Ready for Attorney Review",
-    reason:
-      "External-delivery check has no open deterministic blocks. Praxis still does not generate an external response.",
-  };
-}
-
-function buildCriticalBlocks(
-  stopConditions: StopCondition[],
-  packageType: PackageType
-): CriticalBlock[] {
-  const blocks: CriticalBlock[] = [];
-
-  stopConditions.forEach((stop) => {
-    if (stop.status !== "OPEN") return;
-
-    if (stop.id === "S1") {
-      blocks.push({
-        id: "S1",
-        issue: `Old-matter residue in current draft: ${stop.message}`,
-        impact: "Do Not Send.",
-        owner: "Internal cleanup and attorney review before external use.",
-      });
-    }
-
-    if (stop.id === "S7" && isExternalDeliveryContext(packageType)) {
-      blocks.push({
-        id: "S7",
-        issue: "Draft is not confirmed attorney-approved for external delivery.",
-        impact: "Do Not Send.",
-        owner: "Attorney approval required before any external delivery.",
-      });
-    }
-  });
-
-  return blocks;
-}
-
-function partyRows(partyInfo: string): string[][] {
-  return splitLines(partyInfo)
-    .filter((line) => !/^name\s*\|/i.test(line))
-    .map((line) => line.split("|").map((part) => part.trim()))
-    .filter((parts) => parts[0]);
-}
-
-function partyNamesByType(
-  partyInfo: string,
-  predicate: (value: string) => boolean
-): string[] {
-  return partyRows(partyInfo)
-    .filter((parts) => predicate(parts[1] || ""))
-    .map((parts) => parts[0])
-    .filter(Boolean);
-}
-
-function buildMatterSnapshot(body: RequestBody): MatterSnapshot {
-  return {
-    currentEntities: partyNamesByType(body.partyInfo, isEntityType),
-    currentIndividuals: partyNamesByType(body.partyInfo, isIndividualType),
-    selectedWorkflows: getSelectedWorkflows(body),
-    dealTerms: parseDealTerms(body.dealTerms),
-  };
+  return { primary: routes[0], secondary: routes.slice(1), readiness, packageContext: packageType };
 }
 
 function buildConfirmationNeeded(args: {
@@ -1389,43 +577,32 @@ function buildConfirmationNeeded(args: {
   const { stopConditions, unresolvedDealTerms, equityLanguageHits } = args;
   const items: ConfirmationItem[] = [];
 
-  const s2 = stopConditions.find((stop) => stop.id === "S2");
-  const s4 = stopConditions.find((stop) => stop.id === "S4");
-  const s8 = stopConditions.find((stop) => stop.id === "S8");
-
-  if (s4?.status === "OPEN") {
-    items.push({
-      item: "Deadline",
-      owner: "Client Follow-Up",
-      source: "S4 OPEN",
+  stopConditions
+    .filter((stop) => stop.status !== "CLEARED")
+    .forEach((stop) => {
+      items.push({
+        item: stop.message,
+        owner: ["S7", "S8"].includes(stop.id) ? "Attorney Review" : "Human Confirmation Required",
+        source: stop.id,
+      });
     });
-  }
 
-  if (s2?.status === "HUMAN CONFIRMATION REQUIRED") {
-    items.push({
-      item: "Caption/body party consistency",
-      owner: "Internal Cross-Check",
-      source: "S2 HUMAN CONFIRMATION REQUIRED",
-    });
-  }
+  unresolvedDealTerms.forEach((row) =>
+    items.push({ item: `${row.term}: confirm provenance and approved value.`, owner: "Attorney Review", source: row.raw })
+  );
 
-  unresolvedDealTerms.forEach((row) => {
-    items.push({
-      item: `${row.term} provenance`,
-      owner: "Attorney Review",
-      source: `S3 OPEN — ${row.provenance || "blank"}`,
-    });
-  });
-
-  if (s8?.status === "OPEN" && equityLanguageHits.length > 0) {
-    items.push({
-      item: "Equity or membership-interest language",
-      owner: "Attorney Review",
-      source: `S8 OPEN — ${equityLanguageHits.join(", ")}`,
-    });
-  }
+  if (equityLanguageHits.length)
+    items.push({ item: `Route equity-adjacent language: ${equityLanguageHits.join(", ")}.`, owner: "Attorney Review", source: "Raw materials / risk flags" });
 
   return items;
+}
+
+function stopMessage(stops: StopCondition[], id: StopCondition["id"]): string {
+  return stops.find((stop) => stop.id === id)?.message ?? "Condition not found.";
+}
+
+function sortAttorneyDecisionCards(cards: AttorneyDecisionCard[]): AttorneyDecisionCard[] {
+  return cards.sort((a, b) => PRIORITY_RANK[a.priority] - PRIORITY_RANK[b.priority]);
 }
 
 function buildAttorneyDecisionCards(args: {
@@ -1434,347 +611,77 @@ function buildAttorneyDecisionCards(args: {
   equityLanguageHits: string[];
   packageType: PackageType;
 }): AttorneyDecisionCard[] {
-  const { stopConditions, unresolvedDealTerms, equityLanguageHits, packageType } =
-    args;
+  const { stopConditions, unresolvedDealTerms, equityLanguageHits, packageType } = args;
   const cards: AttorneyDecisionCard[] = [];
+  const open = (id: StopCondition["id"]) =>
+    stopConditions.some((stop) => stop.id === id && stop.status !== "CLEARED");
 
-  const s1Open = stopConditions.some(
-    (stop) => stop.id === "S1" && stop.status === "OPEN"
+  const push = (card: AttorneyDecisionCard) => cards.push(card);
+
+  if (open("S1"))
+    push({ issue: "Old-matter residue in current draft", priority: "Critical", constraint: "Prior-matter terms cannot remain in the current matter draft.", evidence: stopMessage(stopConditions, "S1"), application: "The current draft is contaminated by old/excluded terms.", praxisDidNotDecide: "Praxis did not decide whether any detected term should be retained.", attorneyDecisionNeeded: "Confirm cleanup or quarantine before further review.", safeNextStep: "Remove or quarantine the detected terms and rerun Praxis.", routing: "Human Confirmation Required" });
+  if (open("S2"))
+    push({ issue: "Caption/body party consistency not confirmed", priority: "High", constraint: "Party consistency requires human verification.", evidence: stopMessage(stopConditions, "S2"), application: "Praxis cannot establish that the caption and body identify the same parties.", praxisDidNotDecide: "Praxis did not determine party identity from context.", attorneyDecisionNeeded: "Confirm whether correction is required.", safeNextStep: "Run a caption/title versus body-party check, record the result, and rerun the memo.", routing: "Human Confirmation Required" });
+  if (open("S4"))
+    push({ issue: "Deadline handling", priority: "High", constraint: "A blank deadline cannot be treated as intentional without confirmation.", evidence: stopMessage(stopConditions, "S4"), application: "Praxis cannot distinguish an intentional blank from missing information.", praxisDidNotDecide: "Praxis did not decide whether a deadline is required.", attorneyDecisionNeeded: "Confirm whether to supply, hold, or mark blank/not applicable.", safeNextStep: "Obtain deadline direction before external delivery.", routing: "Human Confirmation Required" });
+
+  unresolvedDealTerms.forEach((row) =>
+    push({ issue: `Deal-term provenance: ${row.term || "(blank term)"}`, priority: "High", constraint: "Unresolved terms cannot be treated as confirmed drafting inputs.", evidence: `${row.term || "(blank term)"} = ${row.value || "(blank value)"}; Provenance = ${row.provenance || "blank"}.`, application: "The term is present but not established as approved for use.", praxisDidNotDecide: "Praxis did not decide enforceability or business reasonableness.", attorneyDecisionNeeded: "Decide whether to include, revise, remove, or request confirmation.", safeNextStep: "Hold the term in the attorney-review queue.", routing: "Attorney Review" })
   );
 
-  const s2NeedsConfirmation = stopConditions.some(
-    (stop) =>
-      stop.id === "S2" && stop.status === "HUMAN CONFIRMATION REQUIRED"
-  );
-
-  const s4Open = stopConditions.some(
-    (stop) => stop.id === "S4" && stop.status === "OPEN"
-  );
-
-  const s6Open = stopConditions.some(
-    (stop) => stop.id === "S6" && stop.status === "OPEN"
-  );
-
-  const s7Open =
-    isExternalDeliveryContext(packageType) &&
-    stopConditions.some(
-      (stop) => stop.id === "S7" && stop.status === "OPEN"
-    );
-
-  const s8Open = stopConditions.some(
-    (stop) => stop.id === "S8" && stop.status === "OPEN"
-  );
-
-  if (s1Open) {
-    cards.push({
-      issue: "Old-matter residue in current draft",
-      priority: "Critical",
-      constraint:
-        "Old or excluded matter terms detected in the current draft cannot be treated as safe for attorney review or external delivery until removed and rerun.",
-      evidence: `S1 OPEN — ${stopMessage(stopConditions, "S1")}`,
-      application:
-        "The current draft should be quarantined because it may contain residue from a prior matter.",
-      praxisDidNotDecide:
-        "Praxis did not decide whether the residue is legally material, harmless, or acceptable.",
-      attorneyDecisionNeeded:
-        "Confirm whether cleanup is complete after the listed terms are removed or otherwise addressed.",
-      safeNextStep:
-        "Quarantine the draft, clean the listed terms, and rerun the safety gate before attorney review or external use.",
-      routing: "Attorney Review",
-    });
-  }
-
-  if (s2NeedsConfirmation) {
-    cards.push({
-      issue: "Caption/body party consistency not confirmed",
-      priority: "High",
-      constraint:
-        "Caption or title party consistency must be confirmed by human review before Praxis treats the party structure as checked.",
-      evidence: "S2 HUMAN CONFIRMATION REQUIRED — caption/body consistency has not been confirmed.",
-      application:
-        "The party table may be structurally valid, but Praxis cannot infer that source captions, titles, and body parties match.",
-      praxisDidNotDecide:
-        "Praxis did not decide whether the caption/title parties actually match the body parties.",
-      attorneyDecisionNeeded:
-        "Confirm whether the caption/title parties match the body parties or require correction.",
-      safeNextStep:
-        "Run a caption/title versus body-party check, record the result, and rerun the memo.",
-      routing: "Human Confirmation Required",
-    });
-  }
-
-  if (s4Open) {
-    cards.push({
-      issue: "Deadline handling",
-      priority: "High",
-      constraint:
-        "A blank deadline cannot be treated as intentionally blank or not applicable unless a responsible reviewer confirms that status.",
-      evidence:
-        "S4 OPEN — Deadline is blank and no responsible reviewer has confirmed that it should remain blank or not applicable.",
-      application:
-        "Praxis cannot distinguish between an intentionally blank deadline and a missing deadline from the current input alone.",
-      praxisDidNotDecide:
-        "Praxis did not decide whether a deadline is legally or commercially required.",
-      attorneyDecisionNeeded:
-        "Confirm whether the deadline should be supplied, held pending follow-up, or marked blank/not applicable.",
-      safeNextStep:
-        "Obtain deadline direction or mark blank/not-applicable only after responsible reviewer confirmation.",
-      routing: "Human Confirmation Required",
-    });
-  }
-
-  unresolvedDealTerms.forEach((row) => {
-    cards.push({
-      issue: `Deal-term provenance: ${row.term || "(blank term)"}`,
-      priority: "High",
-      constraint:
-        "Inherited, unknown, blank, or otherwise unresolved deal terms cannot be treated as confirmed drafting inputs.",
-      evidence: `${row.term || "(blank term)"} = ${
-        row.value || "(blank value)"
-      }; Provenance = ${row.provenance || "blank"}.`,
-      application:
-        "The term is present in the structured deal table, but its provenance does not establish that it is confirmed for use.",
-      praxisDidNotDecide:
-        "Praxis did not decide enforceability, business reasonableness, or whether the term should be included.",
-      attorneyDecisionNeeded:
-        "Decide whether to include as stated, revise, remove, or request confirmation.",
-      safeNextStep:
-        "Hold this term in the attorney-review queue and do not use it as confirmed external-draft language until direction is recorded.",
-      routing: "Attorney Review",
-    });
-  });
-
-  if (s6Open) {
-    cards.push({
-      issue: "Attorney instruction missing",
-      priority: "Normal",
-      constraint:
-        "Praxis should not treat the objective of the matter as documented unless an ATTORNEY INSTRUCTION section is present.",
-      evidence: "S6 OPEN — No ATTORNEY INSTRUCTION section found.",
-      application:
-        "The memo can identify routing issues, but the intended drafting objective is not documented in the expected source section.",
-      praxisDidNotDecide:
-        "Praxis did not infer attorney intent from surrounding materials.",
-      attorneyDecisionNeeded:
-        "Confirm or provide the attorney instruction that should govern the review package.",
-      safeNextStep:
-        "Add an ATTORNEY INSTRUCTION section and rerun the memo.",
-      routing: "Human Confirmation Required",
-    });
-  }
-
-  if (s7Open) {
-    cards.push({
-      issue: "External-delivery approval not confirmed",
-      priority: "Critical",
-      constraint:
-        "External delivery cannot be treated as attorney-approved unless Reviewer Type is Attorney and the attorney approval control is checked.",
-      evidence: `S7 OPEN — ${stopMessage(stopConditions, "S7")}`,
-      application:
-        "The draft may be internally reviewable, but it is not cleared for external delivery.",
-      praxisDidNotDecide:
-        "Praxis did not decide whether the draft is legally correct, complete, or ready to send.",
-      attorneyDecisionNeeded:
-        "Confirm whether an attorney has approved this exact draft for external delivery.",
-      safeNextStep:
-        "Do not send externally until attorney approval is recorded by an Attorney reviewer.",
-      routing: "Attorney Review",
-    });
-  }
-
-  if (s8Open && equityLanguageHits.length > 0) {
-    cards.push({
-      issue: "Equity or membership-interest-adjacent language",
-      priority: "High",
-      constraint:
-        "Equity, membership-interest, or ownership-interest-adjacent language may fall outside a standard NDA-only preparation workflow and must be routed before use.",
-      evidence: equityLanguageHits.join(", "),
-      application:
-        "The detected language should not be silently treated as ordinary NDA language.",
-      praxisDidNotDecide:
-        "Praxis did not decide whether the language creates, transfers, waives, or affects any ownership interest.",
-      attorneyDecisionNeeded:
-        "Decide whether this is ordinary return-of-property language, needs revision, or should be routed outside the standard NDA workflow.",
-      safeNextStep:
-        "Hold the language for attorney review and do not use it as confirmed drafting language until routed.",
-      routing: "Attorney Review",
-    });
-  }
+  if (open("S6"))
+    push({ issue: "Attorney instruction missing", priority: "Normal", constraint: "The intended drafting objective must be documented.", evidence: stopMessage(stopConditions, "S6"), application: "The package lacks the expected attorney instruction.", praxisDidNotDecide: "Praxis did not infer attorney intent.", attorneyDecisionNeeded: "Provide the instruction governing the package.", safeNextStep: "Add an ATTORNEY INSTRUCTION section and rerun.", routing: "Human Confirmation Required" });
+  if (isExternalDeliveryContext(packageType) && open("S7"))
+    push({ issue: "External-delivery approval not confirmed", priority: "Critical", constraint: "External delivery requires approval by an Attorney reviewer.", evidence: stopMessage(stopConditions, "S7"), application: "The draft is not cleared for external delivery.", praxisDidNotDecide: "Praxis did not decide whether the draft is legally complete or ready to send.", attorneyDecisionNeeded: "Confirm approval of this exact draft.", safeNextStep: "Do not send until approval is recorded.", routing: "Attorney Review" });
+  if (open("S8") && equityLanguageHits.length)
+    push({ issue: "Equity or membership-interest-adjacent language", priority: "High", constraint: "Ownership-adjacent language must be routed before use.", evidence: equityLanguageHits.join(", "), application: "The language should not be treated as ordinary NDA language without review.", praxisDidNotDecide: "Praxis did not decide whether ownership rights are affected.", attorneyDecisionNeeded: "Decide whether separate ownership-rights review is required.", safeNextStep: "Hold the language for attorney review.", routing: "Attorney Review" });
 
   return sortAttorneyDecisionCards(cards);
 }
 
-function buildAttorneyQuestions(
-  cards: AttorneyDecisionCard[]
-): AttorneyQuestion[] {
-  return cards.map((card) => {
-    let question = card.attorneyDecisionNeeded;
-
-    if (card.issue.startsWith("Deal-term provenance:")) {
-      const term = card.issue.replace("Deal-term provenance:", "").trim();
-
-      question = `Should ${term} be included as stated, revised, removed, or confirmed before use?`;
-    }
-
-    if (card.issue === "External-delivery approval not confirmed") {
-      question =
-        "Has an Attorney reviewer approved this exact draft for external delivery?";
-    }
-
-    if (card.issue === "Old-matter residue in current draft") {
-      question =
-        "Has the old-matter residue been removed or otherwise addressed so the cleaned draft can be reviewed?";
-    }
-
-    if (card.issue === "Caption/body party consistency not confirmed") {
-      question =
-        "Do the caption/title parties match the body parties, or is correction required?";
-    }
-
-    if (card.issue === "Deadline handling") {
-      question =
-        "Should a deadline be supplied, confirmed blank/not applicable, or held pending follow-up?";
-    }
-
-    if (card.issue === "Attorney instruction missing") {
-      question =
-        "What attorney instruction should govern this review package?";
-    }
-
-    if (card.issue === "Equity or membership-interest-adjacent language") {
-      question =
-        "Is the equity or membership-interest language ordinary return-of-property language, or does it require separate ownership-rights review?";
-    }
-
-    return {
-      question,
-      sourceIssue: card.issue,
-      priority: card.priority,
-      routing: card.routing,
-    };
-  });
+function buildAttorneyQuestions(cards: AttorneyDecisionCard[]): AttorneyQuestion[] {
+  return cards.map((card) => ({
+    question: card.attorneyDecisionNeeded,
+    sourceIssue: card.issue,
+    priority: card.priority,
+    routing: card.routing,
+  }));
 }
 
 function decisionOptionsForCard(card: AttorneyDecisionCard): string {
-  if (card.issue.startsWith("Deal-term provenance:")) {
-    return "Include as stated / revise / remove / request confirmation";
-  }
-
-  if (card.issue === "External-delivery approval not confirmed") {
-    return "Approve external delivery / reject / return for revision";
-  }
-
-  if (card.issue === "Old-matter residue in current draft") {
-    return "Confirm cleanup / require further cleanup / quarantine";
-  }
-
-  if (card.issue === "Caption/body party consistency not confirmed") {
-    return "Confirm match / correct parties / escalate";
-  }
-
-  if (card.issue === "Deadline handling") {
-    return "Supply deadline / confirm blank or not applicable / request follow-up";
-  }
-
-  if (card.issue === "Attorney instruction missing") {
-    return "Provide instruction / request instruction / hold package";
-  }
-
-  if (card.issue === "Equity or membership-interest-adjacent language") {
-    return "Treat as ordinary return-of-property / revise / route separately";
-  }
-
+  if (card.issue.startsWith("Deal-term provenance:")) return "Include as stated / revise / remove / request confirmation";
+  if (card.issue === "External-delivery approval not confirmed") return "Approve external delivery / reject / return for revision";
+  if (card.issue === "Old-matter residue in current draft") return "Confirm cleanup / require further cleanup / quarantine";
+  if (card.issue === "Caption/body party consistency not confirmed") return "Confirm match / correct parties / escalate";
+  if (card.issue === "Deadline handling") return "Supply deadline / confirm blank or not applicable / request follow-up";
+  if (card.issue === "Attorney instruction missing") return "Provide instruction / request instruction / hold package";
+  if (card.issue === "Equity or membership-interest-adjacent language") return "Treat as ordinary return-of-property / revise / route separately";
   return "Approve / revise / remove / request confirmation";
 }
 
-function decisionOwnerForCard(
-  card: AttorneyDecisionCard
-): DecisionTableRow["owner"] {
-  if (card.routing === "Attorney Review") return "Attorney";
-
-  if (card.issue === "Deadline handling") return "Paralegal";
-
-  if (card.issue === "Caption/body party consistency not confirmed") {
-    return "Paralegal";
-  }
-
-  return "Attorney";
-}
-
-function buildDecisionTable(
-  cards: AttorneyDecisionCard[]
-): DecisionTableRow[] {
+function buildDecisionTable(cards: AttorneyDecisionCard[]): DecisionTableRow[] {
   return cards.map((card) => ({
     issue: card.issue,
     evidence: card.evidence,
     options: decisionOptionsForCard(card),
     safeDefault: card.safeNextStep,
-    owner: decisionOwnerForCard(card),
+    owner: card.routing === "Attorney Review" ? "Attorney" : "Paralegal",
   }));
 }
 
-function sourceAreaForCard(
-  card: AttorneyDecisionCard
-): SourceToIssueMapRow["sourceArea"] {
-  if (card.issue === "Old-matter residue in current draft") {
-    return "Current Draft";
-  }
-
-  if (card.issue === "Caption/body party consistency not confirmed") {
-    return "Review Controls";
-  }
-
-  if (card.issue === "Deadline handling") {
-    return "Review Controls";
-  }
-
-  if (card.issue.startsWith("Deal-term provenance:")) {
-    return "Deal Terms";
-  }
-
-  if (card.issue === "Attorney instruction missing") {
-    return "Raw Materials";
-  }
-
-  if (card.issue === "External-delivery approval not confirmed") {
-    return "Review Controls";
-  }
-
-  if (card.issue === "Equity or membership-interest-adjacent language") {
-    return "Raw Materials";
-  }
-
-  return "Raw Materials";
+function sourceAreaForCard(card: AttorneyDecisionCard): SourceToIssueMapRow["sourceArea"] {
+  if (card.issue === "Old-matter residue in current draft") return "Current Draft";
+  if (card.issue.startsWith("Deal-term provenance:")) return "Deal Terms";
+  if (card.issue === "Attorney instruction missing" || card.issue === "Equity or membership-interest-adjacent language") return "Raw Materials";
+  return "Review Controls";
 }
 
-function triggerForCard(card: AttorneyDecisionCard): string {
-  if (card.evidence.startsWith("S1")) return "S1 OPEN";
-  if (card.evidence.startsWith("S2")) {
-    return "S2 HUMAN CONFIRMATION REQUIRED";
-  }
-  if (card.evidence.startsWith("S4")) return "S4 OPEN";
-  if (card.evidence.startsWith("S6")) return "S6 OPEN";
-  if (card.evidence.startsWith("S7")) return "S7 OPEN";
-
-  if (card.issue.startsWith("Deal-term provenance:")) {
-    return "S3 OPEN";
-  }
-
-  if (card.issue === "Equity or membership-interest-adjacent language") {
-    return "S8 OPEN";
-  }
-
-  return "Derived from attorney decision card";
-}
-
-function buildSourceToIssueMap(
-  cards: AttorneyDecisionCard[]
-): SourceToIssueMapRow[] {
+function buildSourceToIssueMap(cards: AttorneyDecisionCard[]): SourceToIssueMapRow[] {
   return cards.map((card) => ({
     issue: card.issue,
     sourceArea: sourceAreaForCard(card),
     sourceDetail: card.evidence,
-    trigger: triggerForCard(card),
+    trigger: "Derived from attorney decision card",
     confidence: "High",
   }));
 }
@@ -1785,155 +692,57 @@ function buildParalegalWorkQueue(args: {
   unresolvedDealTerms: DealTermRow[];
   packageType: PackageType;
 }): ParalegalWorkItem[] {
-  const { stopConditions, oldMatterHits, unresolvedDealTerms, packageType } =
-    args;
+  const { stopConditions, oldMatterHits, unresolvedDealTerms, packageType } = args;
   const items: ParalegalWorkItem[] = [];
+  const open = (id: StopCondition["id"]) => stopConditions.some((stop) => stop.id === id && stop.status !== "CLEARED");
 
-  const s1Open = stopConditions.some(
-    (stop) => stop.id === "S1" && stop.status === "OPEN"
-  );
-  const s7Open =
-    isExternalDeliveryContext(packageType) &&
-    stopConditions.some(
-      (stop) => stop.id === "S7" && stop.status === "OPEN"
-    );
-  const s2NeedsCheck = stopConditions.some(
-    (stop) =>
-      stop.id === "S2" && stop.status === "HUMAN CONFIRMATION REQUIRED"
-  );
-  const s4Open = stopConditions.some(
-    (stop) => stop.id === "S4" && stop.status === "OPEN"
-  );
-
-  if (s1Open) {
-    items.push({
-      task: `Quarantine the current draft and identify old/excluded term locations: ${oldMatterHits.join(
-        ", "
-      )}.`,
-      owner: "Internal QA",
-      priority: "Critical",
-    });
-  }
-
-  if (s7Open) {
-    items.push({
-      task: "Confirm attorney-approved draft status before any external delivery.",
-      owner: "Attorney",
-      priority: "Critical",
-    });
-  }
-
-  if (s2NeedsCheck) {
-    items.push({
-      task: "Run caption/title versus body party consistency check.",
-      owner: "Paralegal",
-      priority: "High",
-    });
-  }
-
-  if (s4Open) {
-    items.push({
-      task: "Confirm deadline status with the appropriate owner before external delivery.",
-      owner: "Paralegal",
-      priority: "High",
-    });
-  }
-
-  if (unresolvedDealTerms.length > 0) {
-    items.push({
-      task: `Prepare unresolved deal-term provenance list for attorney review: ${unresolvedDealTerms
-        .map((row) => `${row.term} (${row.provenance || "blank"})`)
-        .join(", ")}.`,
-      owner: "Paralegal",
-      priority: "High",
-    });
-  }
+  if (open("S1")) items.push({ task: `Quarantine the current draft and identify old/excluded terms: ${oldMatterHits.join(", ")}.`, owner: "Internal QA", priority: "Critical" });
+  if (isExternalDeliveryContext(packageType) && open("S7")) items.push({ task: "Confirm attorney approval before any external delivery.", owner: "Attorney", priority: "Critical" });
+  if (open("S2")) items.push({ task: "Run caption/title versus body party consistency check.", owner: "Paralegal", priority: "High" });
+  if (open("S4")) items.push({ task: "Confirm deadline status.", owner: "Paralegal", priority: "High" });
+  if (unresolvedDealTerms.length)
+    items.push({ task: `Prepare unresolved deal-term list: ${unresolvedDealTerms.map((row) => `${row.term} (${row.provenance || "blank"})`).join(", ")}.`, owner: "Paralegal", priority: "High" });
 
   return items;
 }
 
-function buildWatchlistSummary(
-  oldMatterTerms: string[],
-  oldMatterHits: string[]
-): WatchlistSummary {
-  return {
-    totalChecked: oldMatterTerms.length,
-    detected: oldMatterHits,
-    clearCount: Math.max(oldMatterTerms.length - oldMatterHits.length, 0),
-  };
+function buildWatchlistSummary(oldMatterTerms: string[], oldMatterHits: string[]): WatchlistSummary {
+  return { totalChecked: oldMatterTerms.length, detected: oldMatterHits, clearCount: Math.max(oldMatterTerms.length - oldMatterHits.length, 0) };
 }
 
-function buildDefaultSourceDocuments(
-  body: RequestBody,
-  oldMatterHits: string[]
-): SourceDocument[] {
+function sectionDocumentName(heading: string): string {
+  return heading.trim() || "Raw Materials";
+}
+
+function sectionLabel(heading: string): SourceDocument["label"] {
+  const normalized = normalizeText(heading);
+  if (normalized.includes("client email")) return "CLIENT EMAIL";
+  if (normalized.includes("attorney instruction")) return "ATTORNEY INSTRUCTION";
+  return "REFERENCE";
+}
+
+function buildDefaultSourceDocuments(body: RequestBody, oldMatterHits: string[]): SourceDocument[] {
   const docs: SourceDocument[] = [];
 
   parseRawSections(body.rawMaterials).forEach((section) => {
-    docs.push({
-      document: sectionDocumentName(section.heading),
-      internalDate: "",
-      label: sectionLabel(section.heading),
-      evidence: excerpt(section.content),
-    });
+    docs.push({ document: sectionDocumentName(section.heading), internalDate: "", label: sectionLabel(section.heading), evidence: excerpt(section.content) });
   });
 
-  if (docs.length === 0 && body.rawMaterials.trim()) {
-    docs.push({
-      document: "Raw Materials",
-      internalDate: "",
-      label: "REFERENCE",
-      evidence: "Provided by user.",
-    });
-  }
+  if (!docs.length && body.rawMaterials.trim()) docs.push({ document: "Raw Materials", internalDate: "", label: "REFERENCE", evidence: "Provided by user." });
+  if (body.dealTerms.trim()) docs.push({ document: "Deal Terms", internalDate: "", label: "REFERENCE", evidence: "Provided by user." });
+  if (body.currentDraft.trim()) docs.push({ document: "Current Draft", internalDate: "", label: oldMatterHits.length ? "QUARANTINED" : "UNKNOWN", evidence: oldMatterHits.length ? "Contains old/excluded matter residue." : "Provided by user." });
 
-  if (body.dealTerms.trim()) {
-    docs.push({
-      document: "Deal Terms",
-      internalDate: "",
-      label: "REFERENCE",
-      evidence: "Provided by user.",
-    });
-  }
-
-  if (body.currentDraft.trim()) {
-    docs.push({
-      document: "Current Draft",
-      internalDate: "",
-      label: oldMatterHits.length > 0 ? "QUARANTINED" : "UNKNOWN",
-      evidence:
-        oldMatterHits.length > 0
-          ? "Contains old/excluded matter residue."
-          : "Provided by user.",
-    });
-  }
-
-  return dedupeSourceDocuments(docs).slice(0, 8);
-}
-
-function dedupeSourceDocuments(docs: SourceDocument[]): SourceDocument[] {
   const seen = new Set<string>();
-
   return docs.filter((doc) => {
     const key = normalizeText(`${doc.document} ${doc.label} ${doc.evidence}`);
-
     if (seen.has(key)) return false;
-
     seen.add(key);
     return true;
-  });
+  }).slice(0, 8);
 }
 
 function buildMatterTitle(body: RequestBody): string {
-  const primaryMatterType = getPrimaryMatterType(body);
-
-  if (primaryMatterType) return primaryMatterType;
-
-  if (body.matterTypes.includes("Mutual release + NDA")) {
-    return "Mutual release + NDA";
-  }
-
-  return body.matterTypes[0] || "Attorney Review";
+  return getPrimaryMatterType(body) || "NDA / Mutual Release";
 }
 
 function buildEscalationMemo(args: {
@@ -1944,323 +753,124 @@ function buildEscalationMemo(args: {
   unresolvedDealTerms: DealTermRow[];
   equityLanguageHits: string[];
 }): EscalationMemoOutput {
-  const {
-    body,
-    stopConditions,
-    oldMatterHits,
-    oldMatterTerms,
-    unresolvedDealTerms,
-    equityLanguageHits,
-  } = args;
-
+  const { body, stopConditions, oldMatterHits, oldMatterTerms, unresolvedDealTerms, equityLanguageHits } = args;
   const packageType = normalizePackageType(body.packageType);
-  const sourceDocuments = buildDefaultSourceDocuments(body, oldMatterHits);
-
-  const attorneyDecisionCards = buildAttorneyDecisionCards({
-    stopConditions,
-    unresolvedDealTerms,
-    equityLanguageHits,
-    packageType,
-  });
+  const attorneyDecisionCards = buildAttorneyDecisionCards({ stopConditions, unresolvedDealTerms, equityLanguageHits, packageType });
 
   return {
     matterTitle: buildMatterTitle(body),
     executiveStatus: buildExecutiveStatus(stopConditions, packageType),
     criticalBlocks: buildCriticalBlocks(stopConditions, packageType),
     matterSnapshot: buildMatterSnapshot(body),
-            workflowRoutePlan: buildWorkflowRoutePlan({
-      body,
-      stopConditions,
-      unresolvedDealTerms,
-      equityLanguageHits,
-    }),
-    confirmationNeeded: buildConfirmationNeeded({
-      stopConditions,
-      unresolvedDealTerms,
-      equityLanguageHits,
-    }),
+    workflowRoutePlan: buildWorkflowRoutePlan({ body, stopConditions, unresolvedDealTerms, equityLanguageHits }),
+    confirmationNeeded: buildConfirmationNeeded({ stopConditions, unresolvedDealTerms, equityLanguageHits }),
     attorneyDecisionCards,
     attorneyQuestions: buildAttorneyQuestions(attorneyDecisionCards),
     decisionTable: buildDecisionTable(attorneyDecisionCards),
     sourceToIssueMap: buildSourceToIssueMap(attorneyDecisionCards),
-    paralegalWorkQueue: buildParalegalWorkQueue({
-      stopConditions,
-      oldMatterHits,
-      unresolvedDealTerms,
-      packageType,
-    }),
+    paralegalWorkQueue: buildParalegalWorkQueue({ stopConditions, oldMatterHits, unresolvedDealTerms, packageType }),
     watchlistSummary: buildWatchlistSummary(oldMatterTerms, oldMatterHits),
-    draftResponse: buildDraftResponse(stopConditions, packageType),
+    draftResponse: "Praxis does not generate external-send language in this workflow.",
     processNotes: body.processNotes,
-    sourceDocuments,
+    sourceDocuments: buildDefaultSourceDocuments(body, oldMatterHits),
     internalStopConditions: stopConditions,
   };
 }
 
-function escapeTable(value: string): string {
-  return (value || "").replace(/\|/g, "\\|").replace(/\n/g, " ");
-}
+function validationFromMemo(memo: EscalationMemoOutput): ValidationResult {
+  const issues: ValidationIssue[] = memo.internalStopConditions
+    .filter((stop) => stop.status !== "CLEARED")
+    .map((stop) => ({
+      id: stop.id,
+      severity: ["S1", "S4", "S7", "S8"].includes(stop.id) && stop.status === "OPEN" ? "RED" : "YELLOW",
+      message: stop.message,
+    }));
 
-function renderExecutiveStatus(status: ExecutiveStatus): string[] {
-  return [
-    `**Status:** ${status.status}`,
-    ``,
-    `**Reason:** ${status.reason}`,
-  ];
-}
-
-function renderCriticalBlocks(blocks: CriticalBlock[]): string[] {
-  if (blocks.length === 0) return ["- None."];
-
-  return blocks.flatMap((block) => [
-    `- **${block.id} — ${block.issue}**`,
-    `  - Impact: ${block.impact}`,
-    `  - Owner: ${block.owner}`,
-  ]);
-}
-
-function renderMatterSnapshot(snapshot: MatterSnapshot): string[] {
-  const lines: string[] = [];
-
-  lines.push(
-    `- Current entity parties: ${
-      snapshot.currentEntities.length
-        ? snapshot.currentEntities.join("; ")
-        : "None identified."
-    }`
-  );
-
-  lines.push(
-    `- Current individual parties/signers: ${
-      snapshot.currentIndividuals.length
-        ? snapshot.currentIndividuals.join("; ")
-        : "None identified."
-    }`
-  );
-
-  lines.push(
-    `- Selected workflows: ${
-      snapshot.selectedWorkflows.length
-        ? snapshot.selectedWorkflows.join("; ")
-        : "None selected."
-    }`
-  );
-
-  if (snapshot.dealTerms.length > 0) {
-    snapshot.dealTerms.forEach((row) => {
-      lines.push(
-        `- Deal term: ${row.term || "(blank term)"} = ${
-          row.value || "(blank value)"
-        }; Provenance = ${row.provenance || "blank"}`
-      );
-    });
-  } else {
-    lines.push("- Deal terms: None identified.");
-  }
-
-  return lines;
-}
-
-function renderWorkflowRoute(route: WorkflowRoute): string[] {
-  return [
-    `- **[${route.priority}] ${route.route}** — Owner: ${route.owner}`,
-    `  - Reason: ${route.reason}`,
-    `  - Next action: ${route.nextAction}`,
-    `  - Triggered by: ${route.triggeredBy.join("; ")}`,
-  ];
-}
-
-function renderProfessionalWorkflowRoutes(plan: WorkflowRoutePlan): string[] {
-  const lines: string[] = [
-    `**Readiness:** ${plan.readiness}`,
-    ``,
-    `**Package context:** ${plan.packageContext}`,
-    ``,
-    `**Primary Route**`,
-    ...renderWorkflowRoute(plan.primary),
-    ``,
-    `**Secondary Routes**`,
-  ];
-
-  if (plan.secondary.length === 0) {
-    lines.push("- None.");
-  } else {
-    plan.secondary.forEach((route) => {
-      lines.push(...renderWorkflowRoute(route));
-    });
-  }
-
-  return lines;
-}
-
-function renderConfirmationNeeded(items: ConfirmationItem[]): string[] {
-  if (items.length === 0) return ["- None."];
-
-  return items.map(
-    (item) => `- ${item.item} — ${item.owner} — ${item.source}`
-  );
-}
-
-function renderAttorneyDecisionCards(cards: AttorneyDecisionCard[]): string[] {
-  if (cards.length === 0) return ["1. None."];
-
-  return cards.flatMap((card, index) => [
-    `${index + 1}. **[${card.priority}] ${card.issue}**`,
-    `   - Issue: ${card.issue}`,
-    `   - Constraint: ${card.constraint}`,
-    `   - Evidence: ${card.evidence}`,
-    `   - Application: ${card.application}`,
-    `   - Praxis did not decide: ${card.praxisDidNotDecide}`,
-    `   - Attorney decision needed: ${card.attorneyDecisionNeeded}`,
-    `   - Safe next step: ${card.safeNextStep}`,
-    `   - Routing: ${card.routing}`,
-  ]);
-}
-
-function renderAttorneyQuestions(questions: AttorneyQuestion[]): string[] {
-  if (questions.length === 0) return ["- None."];
-
-  return questions.map(
-    (question, index) =>
-      `${index + 1}. **[${question.priority}]** ${question.question} — Source: ${question.sourceIssue} — Routing: ${question.routing}`
-  );
-}
-
-function renderDecisionTable(rows: DecisionTableRow[]): string[] {
-  if (rows.length === 0) return ["- None."];
-
-  return [
-    `| Issue | Evidence | Options | Safe default | Owner |`,
-    `|---|---|---|---|---|`,
-    ...rows.map(
-      (row) =>
-        `| ${escapeTable(row.issue)} | ${escapeTable(
-          row.evidence
-        )} | ${escapeTable(row.options)} | ${escapeTable(
-          row.safeDefault
-        )} | ${escapeTable(row.owner)} |`
-    ),
-  ];
-}
-
-function renderSourceToIssueMap(rows: SourceToIssueMapRow[]): string[] {
-  if (rows.length === 0) return ["- None."];
-
-  return [
-    `| Issue | Source area | Source detail | Trigger | Confidence |`,
-    `|---|---|---|---|---|`,
-    ...rows.map(
-      (row) =>
-        `| ${escapeTable(row.issue)} | ${escapeTable(
-          row.sourceArea
-        )} | ${escapeTable(row.sourceDetail)} | ${escapeTable(
-          row.trigger
-        )} | ${escapeTable(row.confidence)} |`
-    ),
-  ];
-}
-
-function renderParalegalWorkQueue(items: ParalegalWorkItem[]): string[] {
-  if (items.length === 0) return ["- None."];
-
-  return items.map(
-    (item) => `- [${item.priority}] ${item.task} — Owner: ${item.owner}`
-  );
-}
-
-function renderWatchlistSummary(summary: WatchlistSummary): string[] {
-  return [
-    `- Old/excluded terms checked: ${summary.totalChecked}`,
-    `- Detected in current draft: ${
-      summary.detected.length ? summary.detected.join(", ") : "None"
-    }`,
-    `- Clear: ${summary.clearCount}`,
-  ];
-}
-
-function renderHumanProcessNotes(processNotes: string): string[] {
-  const notes = processNotes.trim();
-
-  if (!notes) return ["- None."];
-
-  return notes
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter(Boolean)
-    .map((line) => `- ${line}`);
-}
-
-function renderSourceDocuments(docs: SourceDocument[]): string[] {
-  if (docs.length === 0) return ["- None."];
-
-  return [
-    `| Document | Internal date | Label | Evidence |`,
-    `|---|---|---|---|`,
-    ...docs.map(
-      (doc) =>
-        `| ${escapeTable(doc.document)} | ${escapeTable(
-          doc.internalDate || "(blank)"
-        )} | ${escapeTable(doc.label)} | ${escapeTable(doc.evidence)} |`
-    ),
-  ];
-}
-
-function renderStopConditions(stops: StopCondition[]): string[] {
-  return stops.map(
-    (stop) =>
-      `- ${stop.id} ${stop.condition} — ${stop.status} — ${stop.message}`
-  );
+  return {
+    status: issues.some((issue) => issue.severity === "RED")
+      ? "RED"
+      : issues.length
+        ? "YELLOW"
+        : "PASS",
+    issues,
+  };
 }
 
 function renderEscalationMemo(memo: EscalationMemoOutput): string {
-  return [
-    `# Praxis Attorney Escalation Memo — ${memo.matterTitle}`,
-    ``,
-    `## 1. Executive Status`,
-    ...renderExecutiveStatus(memo.executiveStatus),
-    ``,
-    `## 2. Critical Blocks`,
-    ...renderCriticalBlocks(memo.criticalBlocks),
-    ``,
-    `## 3. Matter Snapshot`,
-    ...renderMatterSnapshot(memo.matterSnapshot),
-    ``,
-    `## 4. Professional Workflow Route`,
-    ...renderProfessionalWorkflowRoutes(memo.workflowRoutePlan),
-    ``,
-    `## 5. Confirmation Needed`,
-    ...renderConfirmationNeeded(memo.confirmationNeeded),
-        ``,
-    `## 6. Attorney Decision Brief`,
-    ...renderAttorneyDecisionCards(memo.attorneyDecisionCards),
-    ``,
-    `## 7. Attorney Questions`,
-    ...renderAttorneyQuestions(memo.attorneyQuestions),
-    ``,
-    `## 8. Decision Table`,
-    ...renderDecisionTable(memo.decisionTable),
-    ``,
-    `## 9. Source-to-Issue Map`,
-    ...renderSourceToIssueMap(memo.sourceToIssueMap),
-    ``,
-    `## 10. Paralegal Work Queue`,
-    ...renderParalegalWorkQueue(memo.paralegalWorkQueue),
-    ``,
-    `## 11. Watchlist Summary`,
-    ...renderWatchlistSummary(memo.watchlistSummary),
-    ``,
-    `## 12. Draft Response`,
-    memo.draftResponse,
-        ``,
-    `## 13. Human Process Notes`,
-    ...renderHumanProcessNotes(memo.processNotes),
-    ``,
-    `## Appendix A. Source Documents`,
-    ...renderSourceDocuments(memo.sourceDocuments),
-    ``,
-    `## Appendix B. Internal Stop Conditions`,
-    ...renderStopConditions(memo.internalStopConditions),
-  ].join("\n");
+  return formatAttorneyReviewPacket({
+    title: `Praxis Attorney Review Packet — ${memo.matterTitle}`,
+    matterSummary: [
+      `Executive status: ${memo.executiveStatus.status}`,
+      `Reason: ${memo.executiveStatus.reason}`,
+      `Entities: ${memo.matterSnapshot.currentEntities.join("; ") || "None identified"}`,
+      `Individuals/signers: ${memo.matterSnapshot.currentIndividuals.join("; ") || "None identified"}`,
+      `Workflow: ${memo.matterSnapshot.selectedWorkflows.join("; ") || "None selected"}`,
+    ],
+    sources: memo.sourceDocuments.map(
+      (doc) => `${doc.document} — ${doc.label} — ${doc.evidence}`
+    ),
+    validation: validationFromMemo(memo),
+    attorneyDecisions: memo.attorneyDecisionCards.map(
+      (card) => `[${card.priority}] ${card.issue}: ${card.attorneyDecisionNeeded}`
+    ),
+    paralegalNextActions: memo.paralegalWorkQueue.map(
+      (item) => `[${item.priority}] ${item.task} — Owner: ${item.owner}`
+    ),
+    additionalSections: [
+      {
+        heading: "Critical Blocks",
+        items: memo.criticalBlocks.length
+          ? memo.criticalBlocks.map(
+              (block) => `${block.id} — ${block.issue}: ${block.impact} — Owner: ${block.owner}`
+            )
+          : ["None."],
+      },
+      {
+        heading: "Professional Workflow Route",
+        items: [
+          `Readiness: ${memo.workflowRoutePlan.readiness}`,
+          `Primary: ${memo.workflowRoutePlan.primary.route} — ${memo.workflowRoutePlan.primary.nextAction}`,
+          ...memo.workflowRoutePlan.secondary.map(
+            (route) => `Secondary: ${route.route} — ${route.nextAction}`
+          ),
+        ],
+      },
+      {
+        heading: "Confirmation Needed",
+        items: memo.confirmationNeeded.length
+          ? memo.confirmationNeeded.map(
+              (item) => `${item.item} — ${item.owner} — Source: ${item.source}`
+            )
+          : ["None."],
+      },
+      {
+        heading: "Deal Terms",
+        items: memo.matterSnapshot.dealTerms.length
+          ? memo.matterSnapshot.dealTerms.map(
+              (row) => `${row.term || "(blank term)"} = ${row.value || "(blank value)"}; Provenance: ${row.provenance || "blank"}`
+            )
+          : ["None identified."],
+      },
+      {
+        heading: "Watchlist Summary",
+        items: [
+          `Old/excluded terms checked: ${memo.watchlistSummary.totalChecked}`,
+          `Detected: ${memo.watchlistSummary.detected.join(", ") || "None"}`,
+          `Clear: ${memo.watchlistSummary.clearCount}`,
+        ],
+      },
+      {
+        heading: "Internal STOP Conditions",
+        items: memo.internalStopConditions.map(
+          (stop) => `${stop.id} ${stop.condition} — ${stop.status} — ${stop.message}`
+        ),
+      },
+      {
+        heading: "Human Process Notes",
+        items: splitLines(memo.processNotes).length ? splitLines(memo.processNotes) : ["None."],
+      },
+    ],
+  });
 }
 
 export async function POST(request: Request) {
@@ -2269,127 +879,50 @@ export async function POST(request: Request) {
   try {
     body = (await request.json()) as RequestBody;
   } catch {
-    return NextResponse.json(
-      { error: "Invalid JSON in request body." },
-      { status: 400 }
-    );
+    return NextResponse.json({ error: "Invalid JSON in request body." }, { status: 400 });
   }
 
   body.matterTypes = Array.isArray(body.matterTypes) ? body.matterTypes : [];
   body.riskFlags = Array.isArray(body.riskFlags) ? body.riskFlags : [];
   body.packageType = normalizePackageType(body.packageType);
-
-  body.primaryMatterType =
-    typeof body.primaryMatterType === "string" ? body.primaryMatterType : "";
+  body.primaryMatterType = typeof body.primaryMatterType === "string" ? body.primaryMatterType : "";
 
   const missing: string[] = [];
+  if (!body.primaryMatterType && body.matterTypes.length === 0) missing.push("primaryMatterType or matterTypes");
+  if (!body.rawMaterials || !body.rawMaterials.trim()) missing.push("rawMaterials");
+  if (!body.partyInfo || !body.partyInfo.trim()) missing.push("partyInfo");
+  if (!body.dealTerms || !body.dealTerms.trim()) missing.push("dealTerms");
+  if (!body.oldMatterTerms || !body.oldMatterTerms.trim()) missing.push("oldMatterTerms");
+  if (!body.reviewerType || !body.reviewerType.trim()) missing.push("reviewerType");
 
-  if (!body.primaryMatterType && body.matterTypes.length === 0) {
-    missing.push("primaryMatterType or matterTypes");
+  if (missing.length) {
+    return NextResponse.json({ error: `Missing required fields: ${missing.join(", ")}` }, { status: 400 });
   }
 
-  if (!body.rawMaterials || !body.rawMaterials.trim()) {
-    missing.push("rawMaterials");
-  }
-
-  if (!body.partyInfo || !body.partyInfo.trim()) {
-    missing.push("partyInfo");
-  }
-
-  if (!body.dealTerms || !body.dealTerms.trim()) {
-    missing.push("dealTerms");
-  }
-
-  if (!body.oldMatterTerms || !body.oldMatterTerms.trim()) {
-    missing.push("oldMatterTerms");
-  }
-
-  if (!body.reviewerType || !body.reviewerType.trim()) {
-    missing.push("reviewerType");
-  }
-
-  if (missing.length > 0) {
-    return NextResponse.json(
-      { error: `Missing required fields: ${missing.join(", ")}` },
-      { status: 400 }
-    );
-  }
-
-  body.rawMaterials =
-    typeof body.rawMaterials === "string" ? body.rawMaterials : "";
-
-  body.currentDraft =
-    typeof body.currentDraft === "string" ? body.currentDraft : "";
-
-  body.processNotes =
-    typeof body.processNotes === "string" ? body.processNotes : "";
-
-  body.oldMatterTerms =
-    typeof body.oldMatterTerms === "string" ? body.oldMatterTerms : "";
-
+  body.rawMaterials = typeof body.rawMaterials === "string" ? body.rawMaterials : "";
+  body.currentDraft = typeof body.currentDraft === "string" ? body.currentDraft : "";
+  body.processNotes = typeof body.processNotes === "string" ? body.processNotes : "";
+  body.oldMatterTerms = typeof body.oldMatterTerms === "string" ? body.oldMatterTerms : "";
   body.partyInfo = typeof body.partyInfo === "string" ? body.partyInfo : "";
-
   body.dealTerms = typeof body.dealTerms === "string" ? body.dealTerms : "";
-
   body.deadline = typeof body.deadline === "string" ? body.deadline : "";
-
   body.deadlineIntentionallyBlank = Boolean(body.deadlineIntentionallyBlank);
+  body.attorneyApprovedForExternalDelivery = Boolean(body.attorneyApprovedForExternalDelivery);
+  body.captionBodyConsistencyChecked = Boolean(body.captionBodyConsistencyChecked);
+  body.equityIssueRoutedToAttorney = Boolean(body.equityIssueRoutedToAttorney);
 
-  body.attorneyApprovedForExternalDelivery = Boolean(
-    body.attorneyApprovedForExternalDelivery
-  );
-
-  body.captionBodyConsistencyChecked = Boolean(
-    body.captionBodyConsistencyChecked
-  );
-
-  body.equityIssueRoutedToAttorney = Boolean(
-    body.equityIssueRoutedToAttorney
-  );
-
-  const validationIssues = validateStructuredInputs(body);
-
-  if (validationIssues.length > 0) {
-    return NextResponse.json(
-      {
-        error: "Input validation failed.",
-        issues: validationIssues,
-      },
-      { status: 400 }
-    );
+  const structuredIssues = validateStructuredInputs(body);
+  if (structuredIssues.length) {
+    return NextResponse.json({ error: "Input validation failed.", issues: structuredIssues }, { status: 400 });
   }
 
-  const oldMatterHits = findOldMatterHits(
-    body.currentDraft,
-    body.oldMatterTerms
-  );
-
+  const oldMatterHits = findOldMatterHits(body.currentDraft, body.oldMatterTerms);
   const oldMatterTerms = splitLines(body.oldMatterTerms);
-
   const unresolvedDealTerms = findUnresolvedDealTerms(body.dealTerms);
-
   const hasAttorneyInstruction = detectAttorneyInstruction(body.rawMaterials);
-
   const equityLanguageHits = findEquityLanguageHits(body);
+  const stopConditions = buildStopConditions({ body, oldMatterHits, unresolvedDealTerms, hasAttorneyInstruction, equityLanguageHits });
+  const memo = buildEscalationMemo({ body, stopConditions, oldMatterHits, oldMatterTerms, unresolvedDealTerms, equityLanguageHits });
 
-  const stopConditions = buildStopConditions({
-    body,
-    oldMatterHits,
-    unresolvedDealTerms,
-    hasAttorneyInstruction,
-    equityLanguageHits,
-  });
-
-  const memo = buildEscalationMemo({
-    body,
-    stopConditions,
-    oldMatterHits,
-    oldMatterTerms,
-    unresolvedDealTerms,
-    equityLanguageHits,
-  });
-
-  const output = renderEscalationMemo(memo);
-
-  return NextResponse.json({ output });
+  return NextResponse.json({ output: renderEscalationMemo(memo) });
 }

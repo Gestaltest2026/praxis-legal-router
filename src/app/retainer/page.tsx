@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useMemo, useState } from "react";
 import { getProductionModule } from "@/lib/production/modules";
 import { formatAttorneyReviewPacket } from "@/lib/production/reviewPacket";
@@ -93,9 +94,9 @@ export default function RetainerProductionPage() {
     setForm((current) => ({ ...current, [key]: value }));
 
   const validation = useMemo(() => {
-    const module = getProductionModule("retainer");
+    const productionModule = getProductionModule("retainer");
 
-    if (!module) {
+    if (!productionModule) {
       return buildValidationResult([
         {
           id: "retainer-module-missing",
@@ -105,7 +106,7 @@ export default function RetainerProductionPage() {
       ]);
     }
 
-    const requiredResult = validateRequiredInputs(module, form);
+    const requiredResult = validateRequiredInputs(productionModule, form);
     const issues: ValidationIssue[] = [];
 
     const sourceRetainer = normalizeMoney(form.retainerSource);
@@ -186,9 +187,9 @@ export default function RetainerProductionPage() {
   return (
     <main style={page}>
       <div style={shell}>
-        <a href="/" style={{ color: "#93c5fd", fontSize: 13 }}>
+        <Link href="/" style={{ color: "#93c5fd", fontSize: 13 }}>
           ← Praxis Legal Router
-        </a>
+        </Link>
         <div style={{ marginTop: 18, color: "#93c5fd", fontSize: 12, fontWeight: 800 }}>
           RETAINER PRODUCTION · CONTROLLED PILOT
         </div>

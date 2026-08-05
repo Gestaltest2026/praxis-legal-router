@@ -8,7 +8,7 @@
     "start": "next start",
     "lint": "eslint",
     "typecheck": "tsc --noEmit",
-    "test": "tsx --test src/lib/production/__tests__/*.test.ts",
+    "test": "node --test --experimental-strip-types src/lib/production/__tests__/*.test.ts",
     "verify": "npm run lint && npm run typecheck && npm run test && npm run build"
   },
   "dependencies": {
@@ -25,7 +25,6 @@
     "@types/react-dom": "^19",
     "eslint": "^9",
     "eslint-config-next": "16.2.10",
-    "tsx": "^4.20.6",
     "typescript": "^5"
   }
 }

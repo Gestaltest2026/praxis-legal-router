@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useMemo, useState } from "react";
 import { getProductionModule } from "@/lib/production/modules";
 import { formatAttorneyReviewPacket } from "@/lib/production/reviewPacket";
@@ -94,13 +95,13 @@ export default function FeeExpertProductionPage() {
   const [form, setForm] = useState<FormState>(initialForm);
   const [showPacket, setShowPacket] = useState(false);
 
-  const module = getProductionModule("fee-expert");
+  const productionModule = getProductionModule("fee-expert");
 
   const set = <K extends keyof FormState>(key: K, value: FormState[K]) =>
     setForm((current) => ({ ...current, [key]: value }));
 
   const validation = useMemo(() => {
-    if (!module) {
+    if (!productionModule) {
       return buildValidationResult([
         {
           id: "module:missing",
@@ -110,7 +111,7 @@ export default function FeeExpertProductionPage() {
       ]);
     }
 
-    const requiredResult = validateRequiredInputs(module, form);
+    const requiredResult = validateRequiredInputs(productionModule, form);
     const issues: ValidationIssue[] = [];
 
     if (parseMoney(form.depositAmount) === null) {
@@ -155,7 +156,7 @@ export default function FeeExpertProductionPage() {
     }
 
     return combineValidationResults(requiredResult, buildValidationResult(issues));
-  }, [form, module]);
+  }, [form, productionModule]);
 
   const packet = formatAttorneyReviewPacket({
     title: "Praxis Attorney Review Packet — Fee Expert Engagement",
@@ -200,9 +201,9 @@ export default function FeeExpertProductionPage() {
   return (
     <main style={page}>
       <div style={shell}>
-        <a href="/" style={{ color: "#93c5fd", fontSize: 13 }}>
+        <Link href="/" style={{ color: "#93c5fd", fontSize: 13 }}>
           ← Praxis Legal Router
-        </a>
+        </Link>
         <div
           style={{
             marginTop: 18,

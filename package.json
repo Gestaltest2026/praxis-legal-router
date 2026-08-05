@@ -8,7 +8,8 @@
     "start": "next start",
     "lint": "eslint",
     "typecheck": "tsc --noEmit",
-    "test": "node --test --experimental-strip-types src/lib/production/__tests__/*.test.ts",
+    "test:typecheck": "tsc -p tsconfig.tests.json --noEmit",
+    "test": "npm run test:typecheck && node --test --experimental-strip-types src/lib/production/__tests__/*.test.ts",
     "verify": "npm run lint && npm run typecheck && npm run test && npm run build"
   },
   "dependencies": {

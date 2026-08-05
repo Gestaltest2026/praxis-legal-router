@@ -1,4 +1,4 @@
-import type { ValidationStatus } from "./types";
+import type { ProductionStatus } from "./types";
 
 export type MatterState =
   | "DRAFT"
@@ -16,7 +16,7 @@ export type TransitionActor = "Paralegal" | "Attorney" | "System";
 
 export type TransitionContext = {
   actor: TransitionActor;
-  validationStatus: ValidationStatus;
+  validationStatus: ProductionStatus;
   unresolvedIssueCount: number;
   approvedTemplateVersion?: string;
   assembledDocumentHash?: string;

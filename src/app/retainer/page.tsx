@@ -2,6 +2,7 @@
 
 import { useMemo, useState } from "react";
 import { getProductionModule } from "@/lib/production/modules";
+import { formatAttorneyReviewPacket } from "@/lib/production/reviewPacket";
 import {
   buildValidationResult,
   combineValidationResults,
@@ -145,34 +146,42 @@ export default function RetainerProductionPage() {
   const blockers = validation.issues.map((issue) => issue.message);
   const ready = validation.status === "PASS";
 
-  const packet = [
-    "# Praxis Matter Control Sheet",
-    "",
-    "## Fixed Classification",
-    "- Matter: Attorney's Fee Hearing",
-    "- Side: Plaintiff",
-    "- Engagement: Morrie I. Levine, individually",
-    "- Client type: Attorney",
-    "",
-    "## Matter Data",
-    `- Client legal name: ${form.clientName || "(missing)"}`,
-    `- Case caption: ${form.caseCaption || "(missing)"}`,
-    `- Case number: ${form.caseNumber || "(not supplied)"}`,
-    `- Page 1 opening sentence: ${form.openingSentence || "(missing)"}`,
-    "",
-    "## Monetary Verification",
-    `- Retainer — Source: ${form.retainerSource || "(missing)"} | Draft: ${form.retainerDraft || "(missing)"}`,
-    `- Hourly rate — Source: ${form.hourlySource || "(missing)"} | Draft: ${form.hourlyDraft || "(missing)"}`,
-    "",
-    "## Authority and Exceptions",
-    `- Authoritative source: ${form.sourceRecord || "(missing)"}`,
-    `- Unresolved issues: ${form.unresolvedIssues || "None"}`,
-    "",
-    `## Production Status: ${ready ? "READY FOR ATTORNEY REVIEW" : validation.status === "YELLOW" ? "ATTORNEY DECISION REQUIRED" : "DO NOT GENERATE"}`,
-    ...(blockers.length
-      ? blockers.map((item) => `- ${item}`)
-      : ["- Shared deterministic validation checks cleared."]),
-  ].join("\n");
+  const packet = formatAttorneyReviewPacket({
+    title: "Praxis Attorney Review Packet — Retainer Agreement",
+    matterSummary: [
+      "Matter: Attorney's Fee Hearing",
+      "Side: Plaintiff",
+      "Engagement: Morrie I. Levine, individually",
+      "Client type: Attorney",
+      `Client legal name: ${form.clientName || "(missing)"}`,
+      `Case caption: ${form.caseCaption || "(missing)"}`,
+      `Case number: ${form.caseNumber || "(not supplied)"}`,
+    ],
+    sources: [form.sourceRecord || "Authoritative source record missing."],
+    validation,
+    attorneyDecisions: form.unresolvedIssues.trim()
+      ? [form.unresolvedIssues]
+      : [],
+    paralegalNextActions:
+      validation.status === "RED"
+        ? ["Resolve all RED items before document assembly or attorney review."]
+        : validation.status === "YELLOW"
+          ? ["Present the unresolved issue with the controlled draft for attorney decision."]
+          : ["Submit the controlled draft and this packet for attorney review."],
+    additionalSections: [
+      {
+        heading: "Opening Sentence",
+        items: [form.openingSentence || "(missing)"],
+      },
+      {
+        heading: "Monetary Verification",
+        items: [
+          `Retainer — Source: ${form.retainerSource || "(missing)"} | Draft: ${form.retainerDraft || "(missing)"}`,
+          `Hourly rate — Source: ${form.hourlySource || "(missing)"} | Draft: ${form.hourlyDraft || "(missing)"}`,
+        ],
+      },
+    ],
+  });
 
   return (
     <main style={page}>
@@ -248,13 +257,13 @@ export default function RetainerProductionPage() {
             onClick={() => setShowPacket(true)}
             style={{ marginTop: 16, padding: "11px 16px", border: 0, borderRadius: 7, background: "#93c5fd", color: "#0b1220", fontWeight: 800, cursor: "pointer" }}
           >
-            Generate Matter Control Sheet
+            Generate Attorney Review Packet
           </button>
         </section>
 
         {showPacket && (
           <section style={card}>
-            <h2 style={{ margin: "0 0 10px", fontSize: 16 }}>Matter Control Sheet</h2>
+            <h2 style={{ margin: "0 0 10px", fontSize: 16 }}>Attorney Review Packet</h2>
             <pre style={{ whiteSpace: "pre-wrap", lineHeight: 1.55, fontSize: 13, background: "#05070a", padding: 16, borderRadius: 8, overflowX: "auto" }}>{packet}</pre>
           </section>
         )}

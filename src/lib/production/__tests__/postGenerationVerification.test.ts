@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { verifyGeneratedDocument } from "../postGenerationVerification";
+import { verifyGeneratedDocument } from "../postGenerationVerification.ts";
 
 test("passes a clean generated document", () => {
   const result = verifyGeneratedDocument({

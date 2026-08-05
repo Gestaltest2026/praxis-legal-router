@@ -1,6 +1,13 @@
 "use client";
 
 import { useMemo, useState } from "react";
+import { getProductionModule } from "@/lib/production/modules";
+import {
+  buildValidationResult,
+  combineValidationResults,
+  validateRequiredInputs,
+} from "@/lib/production/validate";
+import type { ValidationIssue } from "@/lib/production/types";
 
 type FormState = {
   clientName: string;
@@ -77,10 +84,6 @@ function normalizeMoney(value: string) {
   return value.replace(/[$,\s]/g, "").trim();
 }
 
-function required(value: string) {
-  return value.trim().length > 0;
-}
-
 export default function RetainerProductionPage() {
   const [form, setForm] = useState<FormState>(initialForm);
   const [showPacket, setShowPacket] = useState(false);
@@ -88,43 +91,59 @@ export default function RetainerProductionPage() {
   const set = (key: keyof FormState, value: string) =>
     setForm((current) => ({ ...current, [key]: value }));
 
-  const blockers = useMemo(() => {
-    const next: string[] = [];
+  const validation = useMemo(() => {
+    const module = getProductionModule("retainer");
 
-    if (!required(form.clientName)) next.push("Client legal name is missing.");
-    if (!required(form.caseCaption)) next.push("Case caption is missing.");
-    if (!required(form.openingSentence)) {
-      next.push("Page 1 opening sentence is missing.");
+    if (!module) {
+      return buildValidationResult([
+        {
+          id: "retainer-module-missing",
+          severity: "RED",
+          message: "Retainer production module is unavailable.",
+        },
+      ]);
     }
-    if (!required(form.sourceRecord)) {
-      next.push("Authoritative source record is missing.");
-    }
+
+    const requiredResult = validateRequiredInputs(module, form);
+    const issues: ValidationIssue[] = [];
 
     const sourceRetainer = normalizeMoney(form.retainerSource);
     const draftRetainer = normalizeMoney(form.retainerDraft);
     const sourceHourly = normalizeMoney(form.hourlySource);
     const draftHourly = normalizeMoney(form.hourlyDraft);
 
-    if (!sourceRetainer || !draftRetainer) {
-      next.push("Retainer amount requires both source and draft values.");
-    } else if (sourceRetainer !== draftRetainer) {
-      next.push("STOP: Retainer amount does not match the source.");
+    if (sourceRetainer && draftRetainer && sourceRetainer !== draftRetainer) {
+      issues.push({
+        id: "retainer-money-mismatch",
+        severity: "RED",
+        message: "STOP: Retainer amount does not match the source.",
+      });
     }
 
-    if (!sourceHourly || !draftHourly) {
-      next.push("Hourly rate requires both source and draft values.");
-    } else if (sourceHourly !== draftHourly) {
-      next.push("STOP: Hourly rate does not match the source.");
+    if (sourceHourly && draftHourly && sourceHourly !== draftHourly) {
+      issues.push({
+        id: "hourly-money-mismatch",
+        severity: "RED",
+        message: "STOP: Hourly rate does not match the source.",
+      });
     }
 
-    if (required(form.unresolvedIssues)) {
-      next.push("Unresolved issues require attorney review before production.");
+    if (form.unresolvedIssues.trim()) {
+      issues.push({
+        id: "retainer-unresolved",
+        severity: "YELLOW",
+        message: "Unresolved issues require attorney review before production.",
+      });
     }
 
-    return next;
+    return combineValidationResults(
+      requiredResult,
+      buildValidationResult(issues)
+    );
   }, [form]);
 
-  const ready = blockers.length === 0;
+  const blockers = validation.issues.map((issue) => issue.message);
+  const ready = validation.status === "PASS";
 
   const packet = [
     "# Praxis Matter Control Sheet",
@@ -149,8 +168,10 @@ export default function RetainerProductionPage() {
     `- Authoritative source: ${form.sourceRecord || "(missing)"}`,
     `- Unresolved issues: ${form.unresolvedIssues || "None"}`,
     "",
-    `## Production Status: ${ready ? "READY FOR ATTORNEY REVIEW" : "DO NOT GENERATE"}`,
-    ...(blockers.length ? blockers.map((item) => `- ${item}`) : ["- Deterministic intake checks cleared."]),
+    `## Production Status: ${ready ? "READY FOR ATTORNEY REVIEW" : validation.status === "YELLOW" ? "ATTORNEY DECISION REQUIRED" : "DO NOT GENERATE"}`,
+    ...(blockers.length
+      ? blockers.map((item) => `- ${item}`)
+      : ["- Shared deterministic validation checks cleared."]),
   ].join("\n");
 
   return (
@@ -211,16 +232,16 @@ export default function RetainerProductionPage() {
           <textarea style={{ ...input, minHeight: 90 }} placeholder="Leave blank only if none." value={form.unresolvedIssues} onChange={(e) => set("unresolvedIssues", e.target.value)} />
         </section>
 
-        <section style={{ ...card, borderColor: ready ? "#166534" : "#991b1b" }}>
+        <section style={{ ...card, borderColor: ready ? "#166534" : validation.status === "YELLOW" ? "#a16207" : "#991b1b" }}>
           <h2 style={{ margin: "0 0 8px", fontSize: 16 }}>
-            Status: {ready ? "READY FOR ATTORNEY REVIEW" : "DO NOT GENERATE"}
+            Status: {ready ? "READY FOR ATTORNEY REVIEW" : validation.status === "YELLOW" ? "ATTORNEY DECISION REQUIRED" : "DO NOT GENERATE"}
           </h2>
           {blockers.length ? (
-            <ul style={{ margin: "0 0 0 20px", color: "#fecaca", lineHeight: 1.6 }}>
+            <ul style={{ margin: "0 0 0 20px", color: validation.status === "YELLOW" ? "#fde68a" : "#fecaca", lineHeight: 1.6 }}>
               {blockers.map((item) => <li key={item}>{item}</li>)}
             </ul>
           ) : (
-            <p style={{ margin: 0, color: "#bbf7d0" }}>All deterministic intake checks cleared.</p>
+            <p style={{ margin: 0, color: "#bbf7d0" }}>All shared deterministic validation checks cleared.</p>
           )}
           <button
             type="button"

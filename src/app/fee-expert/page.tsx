@@ -2,6 +2,7 @@
 
 import { useMemo, useState } from "react";
 import { getProductionModule } from "@/lib/production/modules";
+import { formatAttorneyReviewPacket } from "@/lib/production/reviewPacket";
 import {
   buildValidationResult,
   combineValidationResults,
@@ -156,28 +157,45 @@ export default function FeeExpertProductionPage() {
     return combineValidationResults(requiredResult, buildValidationResult(issues));
   }, [form, module]);
 
-  const packet = [
-    "# Fee Expert Attorney Review Packet",
-    "",
-    "## Matter Summary",
-    `- Matter: ${form.matterLabel || "(missing)"}`,
-    `- Case number: ${form.caseNumber || "(missing)"}`,
-    `- Court / county: ${form.court || "(missing)"}`,
-    `- Retaining party: ${form.retainingParty || "(missing)"}`,
-    `- Contracting entity: ${form.contractingEntity || "(missing)"}`,
-    `- Fee position: ${form.feePosition || "(missing)"}`,
-    "",
-    "## Engagement Terms",
-    `- Deposit: ${form.depositAmount || "(missing)"} — ${form.depositType || "(missing classification)"}`,
-    `- Expert rate: ${form.expertRate || "(missing)"}/hour`,
-    `- Pinned clauses confirmed: ${form.standardClauses ? "Yes" : "No"}`,
-    `- Source verified: ${form.sourceVerified ? "Yes" : "No"}`,
-    "",
-    `## Status: ${validation.status}`,
-    ...(validation.issues.length
-      ? validation.issues.map((issue) => `- ${issue.severity} — ${issue.message}`)
-      : ["- PASS — Deterministic checks cleared; ready for attorney review."]),
-  ].join("\n");
+  const packet = formatAttorneyReviewPacket({
+    title: "Praxis Attorney Review Packet — Fee Expert Engagement",
+    matterSummary: [
+      `Matter: ${form.matterLabel || "(missing)"}`,
+      `Case number: ${form.caseNumber || "(missing)"}`,
+      `Court / county: ${form.court || "(missing)"}`,
+      `Retaining party: ${form.retainingParty || "(missing)"}`,
+      `Contracting entity: ${form.contractingEntity || "(missing)"}`,
+      `Fee position: ${form.feePosition || "(missing)"}`,
+    ],
+    sources: [
+      form.sourceVerified
+        ? "Matter variables confirmed against source materials."
+        : "Source verification not confirmed.",
+      form.standardClauses
+        ? "Attorney-approved pinned clause version confirmed."
+        : "Pinned clause version not confirmed.",
+    ],
+    validation,
+    attorneyDecisions:
+      form.depositType === "other"
+        ? ["Approve or reject the nonstandard deposit classification and trust treatment."]
+        : [],
+    paralegalNextActions:
+      validation.status === "RED"
+        ? ["Resolve all RED items before document assembly or attorney review."]
+        : validation.status === "YELLOW"
+          ? ["Present the nonstandard deposit issue and supporting source materials for attorney decision."]
+          : ["Submit the controlled engagement draft and this packet for attorney review."],
+    additionalSections: [
+      {
+        heading: "Engagement Terms",
+        items: [
+          `Deposit: ${form.depositAmount || "(missing)"} — ${form.depositType || "(missing classification)"}`,
+          `Expert rate: ${form.expertRate || "(missing)"}/hour`,
+        ],
+      },
+    ],
+  });
 
   return (
     <main style={page}>

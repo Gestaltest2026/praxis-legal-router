@@ -4,7 +4,7 @@ import {
   selectApprovedTemplate,
   validateTemplateData,
   type ApprovedTemplateDefinition,
-} from "../templateRegistry";
+} from "../templateRegistry.ts";
 
 const approvedTemplate: ApprovedTemplateDefinition = {
   id: "retainer-standard",

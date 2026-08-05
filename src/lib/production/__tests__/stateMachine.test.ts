@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { evaluateTransition, type TransitionContext } from "../stateMachine";
+import { evaluateTransition, type TransitionContext } from "../stateMachine.ts";
 
 const baseContext: TransitionContext = {
   actor: "Paralegal",

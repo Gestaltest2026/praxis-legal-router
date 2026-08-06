@@ -369,7 +369,7 @@ export default function Home() {
 
         <section style={cardStyle}>
           <div style={cardHeaderStyle}>Production Modules</div>
-          <div style={hintStyle}>Three controlled workflows currently share the Praxis production engine.</div>
+          <div style={hintStyle}>Four controlled workflows currently share the Praxis production engine.</div>
           <div style={{ ...segmentedStyle, marginTop: 14 }}>
             <a href="#nda-workflow" style={{ ...moduleLinkStyle, borderColor: "#1d4ed8", background: "#0f1f3d" }}>
               <div style={{ fontWeight: 800 }}>NDA / Mutual Release</div>
@@ -385,6 +385,13 @@ export default function Home() {
               <div style={{ fontWeight: 800 }}>Fee Expert Engagement</div>
               <div style={{ ...hintStyle, marginTop: 6 }}>PASS / YELLOW / RED intake and five-minute attorney review packet.</div>
               <div style={{ marginTop: 12, color: "#bfdbfe", fontSize: 13, fontWeight: 700 }}>Open module →</div>
+            </a>
+            <a href="/kahn-catino" style={{ ...moduleLinkStyle, borderColor: "#7c3aed", background: "#1d1333" }}>
+              <div style={{ fontWeight: 800 }}>Kahn / Catino Command Center</div>
+              <div style={{ ...hintStyle, marginTop: 6 }}>
+                Pre-filing control surface for claims, damages, evidence status, reserved remedies, and attorney gates.
+              </div>
+              <div style={{ marginTop: 12, color: "#ddd6fe", fontSize: 13, fontWeight: 700 }}>Open module →</div>
             </a>
           </div>
         </section>
@@ -403,20 +410,31 @@ export default function Home() {
             {presetButton("reviewPackage", "Attorney Review", "Prepare the review package")}
             {presetButton("externalDelivery", "Delivery Check", "Confirm attorney-controlled release")}
           </div>
-          <div style={{ ...hintStyle, marginTop: 12 }}>{packageCopy.controls} {packageCopy.safety}</div>
         </section>
 
         <section style={cardStyle}>
-          <div style={cardHeaderStyle}>Matter Classification</div>
-          <label style={labelStyle}>Primary Matter Type{requiredMark()}</label>
-          <select style={inputStyle} value={form.primaryMatterType} onChange={(e) => set("primaryMatterType", e.target.value)}>
-            {PRIMARY_MATTER_TYPES.map((item) => <option key={item}>{item}</option>)}
+          <div style={cardHeaderStyle}>Matter Routing</div>
+          <label style={labelStyle}>Primary matter type{requiredMark()}</label>
+          <select
+            value={form.primaryMatterType}
+            onChange={(event) => set("primaryMatterType", event.target.value)}
+            style={inputStyle}
+          >
+            {PRIMARY_MATTER_TYPES.map((item) => (
+              <option key={item} value={item}>{item}</option>
+            ))}
           </select>
-          <label style={labelStyle}>Risk Flags</label>
+
+          <label style={labelStyle}>Risk flags</label>
           <div style={segmentedStyle}>
             {RISK_FLAGS.map((flag) => (
-              <label key={flag} style={buttonBaseStyle}>
-                <input type="checkbox" checked={form.riskFlags.includes(flag)} onChange={() => toggleRiskFlag(flag)} /> {flag}
+              <label key={flag} style={{ ...buttonBaseStyle, display: "flex", gap: 9, alignItems: "center" }}>
+                <input
+                  type="checkbox"
+                  checked={form.riskFlags.includes(flag)}
+                  onChange={() => toggleRiskFlag(flag)}
+                />
+                <span style={{ fontSize: 13 }}>{flag}</span>
               </label>
             ))}
           </div>
@@ -424,74 +442,117 @@ export default function Home() {
 
         <section style={cardStyle}>
           <div style={cardHeaderStyle}>Source Materials</div>
-          <label style={labelStyle}>Raw Materials{requiredMark()}</label>
-          <textarea style={{ ...textareaStyle, minHeight: 220 }} placeholder={RAW_MATERIALS_PLACEHOLDER} value={form.rawMaterials} onChange={(e) => set("rawMaterials", e.target.value)} />
-          <label style={labelStyle}>Current Draft</label>
-          <textarea style={{ ...textareaStyle, minHeight: 150 }} value={form.currentDraft} onChange={(e) => set("currentDraft", e.target.value)} />
+          <label style={labelStyle}>Raw materials{requiredMark()}</label>
+          <textarea
+            rows={15}
+            value={form.rawMaterials}
+            placeholder={RAW_MATERIALS_PLACEHOLDER}
+            onChange={(event) => set("rawMaterials", event.target.value)}
+            style={textareaStyle}
+          />
+
+          <label style={labelStyle}>Current draft</label>
+          <textarea
+            rows={10}
+            value={form.currentDraft}
+            onChange={(event) => set("currentDraft", event.target.value)}
+            style={textareaStyle}
+          />
+
+          <label style={labelStyle}>Process notes</label>
+          <textarea
+            rows={6}
+            value={form.processNotes}
+            onChange={(event) => set("processNotes", event.target.value)}
+            style={textareaStyle}
+          />
         </section>
 
         <section style={cardStyle}>
-          <div style={cardHeaderStyle}>Structured Matter Data</div>
-          <label style={labelStyle}>Party Information{requiredMark()}</label>
-          <textarea style={{ ...textareaStyle, minHeight: 160 }} value={form.partyInfo} onChange={(e) => set("partyInfo", e.target.value)} />
-          <label style={labelStyle}>Deal Terms{requiredMark()}</label>
-          <textarea style={{ ...textareaStyle, minHeight: 130 }} value={form.dealTerms} onChange={(e) => set("dealTerms", e.target.value)} />
-          <label style={labelStyle}>Old Matter Terms / Quarantine List{requiredMark()}</label>
-          <textarea style={{ ...textareaStyle, minHeight: 120 }} value={form.oldMatterTerms} onChange={(e) => set("oldMatterTerms", e.target.value)} />
+          <button type="button" style={smallButtonStyle} onClick={() => setShowAdvanced((value) => !value)}>
+            {showAdvanced ? "Hide" : "Show"} structured inputs
+          </button>
+
+          {showAdvanced ? (
+            <div>
+              <label style={labelStyle}>Old matter terms{requiredMark()}</label>
+              <textarea rows={8} value={form.oldMatterTerms} onChange={(event) => set("oldMatterTerms", event.target.value)} style={textareaStyle} />
+
+              <label style={labelStyle}>Party information{requiredMark()}</label>
+              <textarea rows={10} value={form.partyInfo} onChange={(event) => set("partyInfo", event.target.value)} style={textareaStyle} />
+
+              <label style={labelStyle}>Deal terms{requiredMark()}</label>
+              <textarea rows={8} value={form.dealTerms} onChange={(event) => set("dealTerms", event.target.value)} style={textareaStyle} />
+            </div>
+          ) : null}
         </section>
 
         <section style={cardStyle}>
           <div style={cardHeaderStyle}>Review Controls</div>
-          <label style={labelStyle}>Reviewer Type</label>
-          <select style={inputStyle} value={form.reviewerType} onChange={(e) => handleReviewerTypeChange(e.target.value as ReviewerType)}>
-            <option>Admin</option><option>Paralegal</option><option>Attorney</option>
+          <label style={labelStyle}>Reviewer type</label>
+          <select value={form.reviewerType} onChange={(event) => handleReviewerTypeChange(event.target.value as ReviewerType)} style={inputStyle}>
+            <option value="Admin">Admin</option>
+            <option value="Paralegal">Paralegal</option>
+            <option value="Attorney">Attorney</option>
           </select>
+
           <label style={labelStyle}>Deadline</label>
-          <input style={inputStyle} value={form.deadline} onChange={(e) => set("deadline", e.target.value)} />
-          <label style={buttonBaseStyle}>
-            <input type="checkbox" checked={form.deadlineIntentionallyBlank} onChange={(e) => set("deadlineIntentionallyBlank", e.target.checked)} /> Deadline intentionally left blank
+          <input type="date" value={form.deadline} onChange={(event) => set("deadline", event.target.value)} style={inputStyle} />
+          <label style={{ ...labelStyle, display: "flex", gap: 8, alignItems: "center" }}>
+            <input type="checkbox" checked={form.deadlineIntentionallyBlank} onChange={(event) => set("deadlineIntentionallyBlank", event.target.checked)} />
+            Deadline intentionally blank
           </label>
-          {deadlineWarning && <div style={{ marginTop: 10, color: "#facc15", fontSize: 13 }}>Deadline status requires confirmation.</div>}
-          <label style={buttonBaseStyle}>
-            <input type="checkbox" checked={form.captionBodyConsistencyChecked} onChange={(e) => set("captionBodyConsistencyChecked", e.target.checked)} /> Caption/body consistency checked
+
+          <label style={{ ...labelStyle, display: "flex", gap: 8, alignItems: "center" }}>
+            <input type="checkbox" checked={form.captionBodyConsistencyChecked} onChange={(event) => set("captionBodyConsistencyChecked", event.target.checked)} />
+            Caption/body consistency checked
           </label>
-          <label style={buttonBaseStyle}>
-            <input type="checkbox" checked={form.equityIssueRoutedToAttorney} onChange={(e) => set("equityIssueRoutedToAttorney", e.target.checked)} /> Equity issue routed to attorney
+
+          <label style={{ ...labelStyle, display: "flex", gap: 8, alignItems: "center" }}>
+            <input type="checkbox" checked={form.equityIssueRoutedToAttorney} onChange={(event) => set("equityIssueRoutedToAttorney", event.target.checked)} />
+            Equity issue routed to attorney
           </label>
-          <label style={{ ...buttonBaseStyle, opacity: attorneyApprovalDisabled ? 0.6 : 1 }}>
-            <input type="checkbox" disabled={attorneyApprovalDisabled} checked={form.attorneyApprovedForExternalDelivery} onChange={(e) => set("attorneyApprovedForExternalDelivery", e.target.checked)} /> Attorney approved external delivery
+
+          <label style={{ ...labelStyle, display: "flex", gap: 8, alignItems: "center", opacity: attorneyApprovalDisabled ? 0.55 : 1 }}>
+            <input
+              type="checkbox"
+              disabled={attorneyApprovalDisabled}
+              checked={form.attorneyApprovedForExternalDelivery}
+              onChange={(event) => set("attorneyApprovedForExternalDelivery", event.target.checked)}
+            />
+            Attorney approved for external delivery
           </label>
-          {externalDeliveryWarning && <div style={{ marginTop: 10, color: "#fca5a5", fontSize: 13 }}>External delivery remains blocked.</div>}
-          <button type="button" style={{ ...smallButtonStyle, marginTop: 14 }} onClick={() => setShowAdvanced((value) => !value)}>
-            {showAdvanced ? "Hide Advanced" : "Show Advanced"}
-          </button>
-          {showAdvanced && (
-            <>
-              <label style={labelStyle}>Process Notes</label>
-              <textarea style={{ ...textareaStyle, minHeight: 110 }} value={form.processNotes} onChange={(e) => set("processNotes", e.target.value)} />
-            </>
-          )}
+
+          {deadlineWarning ? <p style={{ color: "#fbbf24", fontSize: 13 }}>Deadline is blank and not marked intentionally blank.</p> : null}
+          {externalDeliveryWarning ? <p style={{ color: "#f87171", fontSize: 13 }}>External delivery remains blocked.</p> : null}
         </section>
 
         <section style={cardStyle}>
+          <div style={cardHeaderStyle}>Generate Controlled Output</div>
+          <p style={hintStyle}>{packageCopy.controls} {packageCopy.safety}</p>
           <button
             type="button"
-            disabled={!canSubmit}
             onClick={handleGenerate}
-            style={{ ...smallButtonStyle, padding: "12px 16px", opacity: canSubmit ? 1 : 0.55 }}
+            disabled={!canSubmit}
+            style={{
+              ...smallButtonStyle,
+              marginTop: 12,
+              background: canSubmit ? "#1d4ed8" : "#1f2937",
+              borderColor: canSubmit ? "#2563eb" : "#374151",
+              cursor: canSubmit ? "pointer" : "not-allowed",
+            }}
           >
-            {loading ? "Generating…" : "Generate Attorney Review Package"}
+            {loading ? "Generating…" : `Generate ${packageCopy.label}`}
           </button>
-          {error && <pre style={{ whiteSpace: "pre-wrap", color: "#fca5a5", marginTop: 14 }}>{error}</pre>}
-        </section>
 
-        {output && (
-          <section style={cardStyle}>
-            <div style={cardHeaderStyle}>Attorney Review Package</div>
-            <button type="button" style={smallButtonStyle} onClick={handleCopy}>{copied ? "Copied" : "Copy"}</button>
-            <pre style={{ whiteSpace: "pre-wrap", lineHeight: 1.55, fontSize: 13, background: "#05070a", padding: 16, borderRadius: 8, overflowX: "auto" }}>{output}</pre>
-          </section>
-        )}
+          {error ? <pre style={{ whiteSpace: "pre-wrap", color: "#fca5a5", marginTop: 16 }}>{error}</pre> : null}
+          {output ? (
+            <div style={{ marginTop: 16 }}>
+              <button type="button" style={smallButtonStyle} onClick={handleCopy}>{copied ? "Copied" : "Copy output"}</button>
+              <pre style={{ whiteSpace: "pre-wrap", background: "#080d14", border: "1px solid #273241", borderRadius: 8, padding: 16, marginTop: 10, lineHeight: 1.5 }}>{output}</pre>
+            </div>
+          ) : null}
+        </section>
       </div>
     </main>
   );

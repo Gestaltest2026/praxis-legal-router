@@ -1,36 +1,36 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Praxis Legal Router
 
-## Getting Started
+A legal operations workflow prototype for structuring intake, validation, escalation, document assembly, and attorney review.
 
-First, run the development server:
+Praxis explores how recurring legal work can be converted into explicit operational systems while preserving human judgment and review.
 
-```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
-```
+## Problem
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Legal workflows often depend on tacit knowledge, manual handoffs, and inconsistent escalation. That makes routine work harder to scale and increases the risk that unresolved issues move too far downstream before attorney review.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## Approach
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+Praxis turns recurring legal work into structured workflows with:
 
-## Learn More
+- explicit required inputs
+- deterministic validation rules
+- routing and stop conditions
+- controlled templates
+- escalation paths for unresolved issues
+- post-generation verification
+- attorney review and approval boundaries
+- auditable workflow states
 
-To learn more about Next.js, take a look at the following resources:
+The core design principle is simple: automate what can be standardized, make exceptions visible, and preserve attorney judgment where it is required.
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+## Why It Matters
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+The goal is not autonomous legal decision-making. The goal is a more consistent and reviewable operating system for legal work—one that helps legal support staff move matters forward while making clear when work must stop, escalate, or return to an attorney.
 
-## Deploy on Vercel
+## Current Status
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+Praxis is a working prototype built with Next.js and TypeScript. It is being developed as an exploration of AI-assisted legal operations, workflow design, and human-in-the-loop review.
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+## Disclaimer
+
+This project is an experimental workflow prototype and does not provide legal advice.

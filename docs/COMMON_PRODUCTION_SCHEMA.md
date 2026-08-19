@@ -2,17 +2,38 @@
 
 ## Purpose
 
-Praxis converts source-verified matter data into a controlled, attorney-review-ready production package.
+Praxis defines a repeatable legal operations model for converting source-verified matter data into attorney-review-ready work product.
 
-Every production module must define the same five elements:
+The schema is designed to improve consistency, exception visibility, review readiness, and operational accountability across recurring legal workflows without displacing attorney judgment.
 
-1. Required Inputs
-2. Routing Conditions
-3. STOP Conditions
-4. Approved Template
-5. Attorney Review Packet Fields
+Each production module follows the same operating model so that legal work can be standardized where appropriate, escalated where necessary, and audited after the fact.
 
-AI may extract, compare, summarize, and propose. It may not invent missing facts, resolve conflicting sources, approve nonstandard language, or authorize external delivery.
+## Legal Operations Objectives
+
+Praxis is designed around several core legal operations objectives:
+
+- reduce dependence on tacit process knowledge
+- standardize recurring matter workflows
+- surface missing, conflicting, or nonstandard conditions early
+- improve handoff quality between legal support staff and attorneys
+- separate routine execution from legal judgment
+- govern templates, rules, and workflow changes explicitly
+- preserve source provenance and review history
+- create a foundation for future process measurement and continuous improvement
+
+These are intended design outcomes. This repository does not claim production-level performance improvements unless supported by validated data.
+
+## Common Operating Model
+
+Every production module must define the same five control domains:
+
+1. **Required Inputs** — information required before work may proceed
+2. **Routing Conditions** — rules that determine the appropriate workflow path
+3. **Exception / STOP Controls** — conditions that block, pause, or escalate production
+4. **Approved Knowledge Assets** — attorney-approved templates, clauses, and controlled reference materials
+5. **Attorney Decision Support Packet** — structured information prepared for attorney review
+
+AI may extract, compare, summarize, identify potential conflicts, and propose next steps. It may not invent missing facts, resolve conflicting sources, approve nonstandard legal language, create operative legal rules, or authorize external delivery.
 
 ## Common Module Contract
 
@@ -28,11 +49,19 @@ type ProductionModule = {
 };
 ```
 
-Each module must produce one of three states:
+The technical contract remains intentionally simple. The legal operations meaning of each field is defined by the operating model above.
 
-- `PASS` — deterministic checks cleared; ready for attorney review.
-- `YELLOW` — attorney decision or human confirmation required.
-- `RED` — production blocked.
+## Triage and Escalation Framework
+
+Each module produces one of three operational statuses:
+
+- `PASS` — deterministic controls cleared; matter is ready for the next authorized review stage
+- `YELLOW` — attorney decision, human confirmation, or nonstandard-condition review is required
+- `RED` — production is blocked until the identified issue is resolved
+
+This framework is intended to make exceptions visible rather than allowing unresolved issues to move silently downstream.
+
+---
 
 ## Module 1 — NDA / Mutual Release
 
@@ -61,7 +90,7 @@ Each module must produce one of three states:
 - Restrictive covenant or non-compete
 - Urgent deadline
 
-### STOP Conditions
+### Exception / STOP Controls
 
 - Missing party identity, capacity, address, or signer authority
 - Current matter data contaminated by unresolved prior-matter terms
@@ -71,13 +100,13 @@ Each module must produce one of three states:
 - External delivery without attorney approval
 - Unresolved conflicting source documents
 
-### Approved Template
+### Approved Knowledge Assets
 
 - Attorney-approved NDA template version
 - Attorney-approved mutual release plus NDA template version
 - Counterparty draft review route does not replace the counterparty document
 
-### Attorney Review Packet Fields
+### Attorney Decision Support Packet
 
 - Executive status
 - Matter snapshot
@@ -91,6 +120,8 @@ Each module must produce one of three states:
 - Source-to-issue map
 - Paralegal work queue
 - Internal STOP conditions
+
+---
 
 ## Module 2 — Retainer Agreement
 
@@ -119,7 +150,7 @@ Initial controlled route:
 
 Future routes must be added only after attorney approval.
 
-### STOP Conditions
+### Exception / STOP Controls
 
 - Client legal name missing
 - Case caption missing
@@ -131,13 +162,13 @@ Future routes must be added only after attorney approval.
 - Unresolved issue remains open
 - Route differs from the approved controlled route
 
-### Approved Template
+### Approved Knowledge Assets
 
 - Attorney-approved Executing Letter template
 - Attorney-approved Retainer Agreement template
 - Exact formatting and pinned clause language must remain unchanged except for approved variable fields
 
-### Attorney Review Packet Fields
+### Attorney Decision Support Packet
 
 - Fixed classification
 - Matter identity
@@ -147,6 +178,8 @@ Future routes must be added only after attorney approval.
 - Unresolved issues
 - Deterministic blocker list
 - Production status
+
+---
 
 ## Module 3 — Fee Expert Engagement
 
@@ -174,7 +207,7 @@ Future routes must be added only after attorney approval.
 - Standard clauses versus nonstandard language
 - Guarantor present versus none
 
-### STOP Conditions
+### Exception / STOP Controls
 
 - Deposit amount absent or invalid
 - Expert rate absent or invalid
@@ -182,15 +215,15 @@ Future routes must be added only after attorney approval.
 - Matter variables not source-verified
 - Required matter identity field missing
 
-A nonstandard deposit classification is `YELLOW`, not automatically `RED`, unless the attorney rejects or the necessary trust treatment cannot be established.
+A nonstandard deposit classification is `YELLOW`, not automatically `RED`, unless the attorney rejects it or the necessary trust treatment cannot be established.
 
-### Approved Template
+### Approved Knowledge Assets
 
 - Attorney-approved Fee Expert Engagement template
 - Pinned standard clause version
 - Any nonstandard language requires explicit attorney approval
 
-### Attorney Review Packet Fields
+### Attorney Decision Support Packet
 
 - Matter summary
 - Case and court information
@@ -202,7 +235,9 @@ A nonstandard deposit classification is `YELLOW`, not automatically `RED`, unles
 - Attorney decisions required
 - PASS / YELLOW / RED status
 
-## Shared Processing Sequence
+---
+
+## Shared Service-Delivery Sequence
 
 ```text
 Source Materials
@@ -213,35 +248,95 @@ Approved Route Selection
     ↓
 Required-Input Validation
     ↓
-STOP / Exception Evaluation
+Exception / STOP Evaluation
     ↓
-Approved Template Selection
+Approved Knowledge Asset Selection
     ↓
 Human Document Assembly or Controlled Field Insertion
     ↓
-Paralegal Self-Review
+Paralegal Quality Review
     ↓
-Attorney Review Packet
+Attorney Decision Support Packet
     ↓
-Attorney Approval
+Attorney Review and Approval
 ```
 
-## Governance Rule
+This sequence separates routine workflow execution from legal judgment and makes each handoff explicit.
 
-New branches, exceptions, templates, and decision rules follow this sequence:
+## Knowledge and Change Governance
+
+New branches, exceptions, templates, clauses, and decision rules follow this governance sequence:
 
 ```text
 AI proposes
     ↓
 Attorney reviews
     ↓
-Rule is approved and versioned
+Rule or knowledge asset is approved and versioned
     ↓
-Praxis enforces the approved rule
+Praxis enforces the approved version
 ```
 
 Praxis must never silently convert an AI suggestion into an operative legal rule.
 
+This governance model treats legal knowledge as a controlled operational asset rather than an informal instruction embedded in individual memory.
+
+## CLOC-Style Capability Mapping
+
+Praxis currently touches several legal operations capability areas:
+
+### Practice Operations
+
+- recurring workflow standardization
+- matter routing
+- escalation and exception handling
+- review-stage handoffs
+- attorney decision preparation
+
+### Technology
+
+- typed workflow configuration
+- deterministic validation
+- structured state and control logic
+- controlled document assembly
+- human-in-the-loop workflow design
+
+### Knowledge Management
+
+- approved templates and clauses
+- versioned legal knowledge assets
+- source provenance
+- route-specific workflow rules
+
+### Information Governance
+
+- source verification
+- controlled fields
+- auditable status and review history
+- separation of proposals from approved operative rules
+
+### Project / Program Management
+
+- explicit workflow stages
+- ownership of next actions
+- repeatable module structure
+- standardized implementation sequence
+
+### Business Intelligence / Continuous Improvement
+
+The current schema creates the structure required to measure future operational metrics such as:
+
+- exception frequency
+- rework frequency
+- review readiness
+- processing time by workflow stage
+- recurring failure categories
+- template and route usage
+
+These metrics are future measurement targets, not current validated performance claims.
+
 ## Immediate Implementation Target
 
-The next code step is to represent these three modules as typed configuration objects and move shared PASS / YELLOW / RED evaluation into one validation engine. Existing user interfaces should remain intact until the shared engine can reproduce their current outputs.
+The next implementation step is to represent these three modules as typed configuration objects and move shared PASS / YELLOW / RED evaluation into one validation engine.
+
+Existing user interfaces should remain intact until the shared engine can reproduce current outputs consistently. The implementation should preserve the distinction between operational automation, quality controls, and attorney decision-making.

@@ -1,3 +1,5 @@
+import Link from "next/link";
+
 import { canRemoveEmailDuplicate, nextRequiredControl } from "@/lib/documents/policy";
 import type { DocumentRecord } from "@/lib/documents/types";
 
@@ -107,9 +109,9 @@ export default function DocumentGovernancePage() {
   return (
     <main style={pageStyle}>
       <div style={containerStyle}>
-        <a href="/" style={{ color: "#93c5fd", textDecoration: "none", fontSize: 13 }}>
+        <Link href="/" style={{ color: "#93c5fd", textDecoration: "none", fontSize: 13 }}>
           ← Production Console
-        </a>
+        </Link>
 
         <header style={{ marginTop: 18 }}>
           <div style={{ fontSize: 12, color: "#93c5fd", fontWeight: 700 }}>
@@ -135,7 +137,7 @@ export default function DocumentGovernancePage() {
         <section style={cardStyle}>
           <div style={{ fontWeight: 800 }}>Governance Rule</div>
           <div style={{ color: "#9ca3af", fontSize: 13, lineHeight: 1.55, marginTop: 6 }}>
-            A sensitive document is not "ready" because it was received. Praxis requires an explicit
+            A sensitive document is not ready merely because it was received. Praxis requires an explicit
             governed state, secure-copy confirmation when required, human verification, a stated legal
             use, and a matter link. Email duplicate removal is a separate retention decision—not an automatic step.
           </div>

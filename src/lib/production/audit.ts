@@ -1,3 +1,11 @@
+/**
+ * Legal Operations capability: Information Governance and Operational Accountability.
+ *
+ * Creates matter-level audit records across validation, workflow transitions,
+ * template selection, document assembly, approval, delivery, and quarantine.
+ * The audit layer preserves provenance and decision history without replacing
+ * substantive attorney judgment.
+ */
 import type { MatterState, TransitionActor, TransitionDecision } from "./stateMachine";
 
 export type AuditEventType =

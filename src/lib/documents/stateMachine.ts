@@ -1,7 +1,7 @@
-import { requiresSecureStorage } from "./policy";
 import type {
   DocumentDecision,
   DocumentRecord,
+  DocumentSensitivity,
   DocumentWorkflowState,
 } from "./types";
 
@@ -16,6 +16,10 @@ const ALLOWED_TRANSITIONS: Readonly<
   READY_FOR_USE: ["QUARANTINED"],
   QUARANTINED: ["CLASSIFIED"],
 };
+
+function requiresSecureStorage(sensitivity: DocumentSensitivity): boolean {
+  return sensitivity === "CONFIDENTIAL" || sensitivity === "HIGHLY_SENSITIVE";
+}
 
 function deny(
   record: DocumentRecord,

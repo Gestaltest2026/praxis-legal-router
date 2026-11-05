@@ -1,17 +1,32 @@
-# Demand Gateway — Public Demo (synthetic only)
+# Demand Gateway — Public Sales Demo v1.2
 
-Sales presentation prototype for Shinjuku × dental. Not a real patient system, not an actual appointment scheduler, and not approved for any real patient information.
+Stage 1: Shinjuku × Dental. **Synthetic demonstration only; not for real patients or clinics.**
 
-- Three hardcoded synthetic test records: D001 (English), D002 (Simplified Chinese), D003 (mixed).
-- Runs entirely in-browser without a backend, network access, external analytics, or persistence.
-- Editable response draft is a demonstration control only. Do not input personal information.
-- Requires simulated reviewer approval to activate simulated sending. Editing revokes approval.
-- No emails, messages, payment requests, or appointments are transmitted.
-- Noindex/nofollow and CSP restrict network requests, but this site is **publicly accessible by anyone with the URL**.
-- Publishing source: `gh-pages` branch root. The repository's `main` branch is unchanged.
-- Source: `prototype/demand-gateway-core-v1-20261105/demand-gateway-core-v1/web-demo/index.html`.
+## Scope
 
-Published site (only after enabling GitHub Pages and verifying deployment):
+- Three fixed fictional cases: D001 English, D002 Simplified Chinese, D003 mixed-language.
+- Visualizes Core Engine v1 outputs. The browser demo is a separate in-memory simulation; Python does not run in the browser.
+- Reviewer approval is required before simulated dispatch; choosing a canned draft revision revokes approval.
+- The public variant **disables freeform data entry entirely**. The reply draft is read-only and can be toggled only between fictional, prewritten variants.
+- Simulated sending and booking never contact customers or calendars.
+- No third-party scripts, analytics, external APIs, payments, backend or browser storage. CSP blocks connect-src.
+- The page is **publicly accessible by anyone with the URL**; noindex is not authentication.
+
+## iPhone demo steps
+
+1. Select D001. Tap 対応開始. Simulated sending is disabled.
+2. Tap 人間が承認. The simulated-send button unlocks.
+3. Tap 定型文で編集（承認取消）. The approval is revoked. Reapprove.
+4. Simulate sending and booking; inspect the in-memory history.
+5. Switch to D002 for Chinese/staff escalation, D003 for mixed language.
+6. Reload the page to reset the demo.
+
+## Production exclusions
+
+No real patient intake, diagnosis, clinical decisions, real communications, appointment scheduling, payment, CRM or production data processing. Legal, security and clinic approval are prerequisites for any live use.
+
+## Hosting
+
+Publishing source: `gh-pages` branch / (root); `main` unchanged.
+
 https://gestaltest2026.github.io/praxis-legal-router/
-
-For current restrictions and details refer to the source prototype README.

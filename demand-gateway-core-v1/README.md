@@ -18,7 +18,7 @@ python -m demand_gateway.cli --db state/demo.sqlite3 show D002
 python -m demand_gateway.cli --db state/demo.sqlite3 events D002
 ```
 
-The `demo` command processes the three supplied fixtures (`D001` English, `D002` Simplified Chinese, `D003` mixed/long) end-to-end: ingest → Japanese summary + structured extraction → original-language draft → explicit human approval → **local simulated dispatch** → simulated booking status. The SQLite DB is local and ignored by git. It prints `NO EXTERNAL MESSAGE SENT` for each case.
+The `demo` command places three supplied fixtures (`D001` English, `D002` Simplified Chinese, `D003` mixed/long) in the **manual review queue**, printing Japanese summaries and original-language drafts. It does **not** auto-approve or auto-send. Run the `approve`, `send`, and `book` commands for each record to complete the flow; the tests exercise all three end-to-end with explicit reviewer actions. The SQLite DB is local and ignored by git. `send` prints `NO EXTERNAL MESSAGE SENT`.
 
 ## Review the approval gate manually
 

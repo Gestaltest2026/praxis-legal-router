@@ -1,9 +1,0 @@
-__pycache__/
-*.py[cod]
-.pytest_cache/
-state/
-*.sqlite3
-*.db
-.env
-.env.*
-.DS_Store

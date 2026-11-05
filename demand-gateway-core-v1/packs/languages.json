@@ -1,0 +1,30 @@
+{
+  "en": {
+    "label": "English",
+    "acknowledge": "Thank you for contacting {clinic}. We have received your inquiry and will have a staff member review it.",
+    "request_details": "Could you confirm whether this is your first visit and your preferred date and time?",
+    "candidate": "Your requested time is within our demonstration opening hours; it is a tentative request, not a confirmed appointment.",
+    "needs_staff": "Questions about symptoms, diagnoses, treatment, and prices must be answered by the clinic's qualified staff. We will forward your question for review.",
+    "confirmation": "A clinic staff member has confirmed the demonstration booking status in our internal log. This is not a real appointment.",
+    "faq": {
+      "hours": "Demo hours: Monday–Friday, 10:00–17:00 Japan time. Please verify with the clinic.",
+      "location": "Demo Shinjuku Dental (fictional). The real address must be confirmed by clinic staff.",
+      "first_visit": "A first visit is tentatively allocated 60 minutes in this demonstration; clinic staff must confirm.",
+      "payment": "Accepted payment methods and fees must be confirmed by clinic staff."
+    }
+  },
+  "zh-Hans": {
+    "label": "简体中文",
+    "acknowledge": "感谢您联系{clinic}。我们已收到您的咨询，将由工作人员核实后回复。",
+    "request_details": "请确认是否为初诊，以及您希望预约的日期和时间。",
+    "candidate": "您希望的时间处于演示营业时段内，但目前仅为候选时间，并非预约成功。",
+    "needs_staff": "症状、诊断、治疗方案和费用须由诊所专业人员核实。我们会转交工作人员处理。",
+    "confirmation": "工作人员已在演示台账中确认模拟预约状态。这不是真实预约。",
+    "faq": {
+      "hours": "演示营业时间：周一至周五，日本时间10:00–17:00；请与诊所确认真实营业时间。",
+      "location": "演示新宿牙科（虚构）。实际地址须向诊所核实。",
+      "first_visit": "本演示为初诊预留60分钟，最终须由诊所确认。",
+      "payment": "可用付款方式与费用请向诊所工作人员确认。"
+    }
+  }
+}

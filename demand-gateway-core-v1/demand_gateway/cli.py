@@ -25,7 +25,7 @@ def run(argv=None):
     )
     parser.add_argument("--db", default=DEFAULT_DB, help="Local SQLite ledger path")
     sub = parser.add_subparsers(dest="command", required=True)
-    sub.add_parser("demo", help="Run all three synthetic records through approval and simulated dispatch")
+    sub.add_parser("demo", help="Load all three synthetic records into the manual approval queue")
     ing = sub.add_parser("ingest", help="Import synthetic JSON fixtures (requires explicit DEMO markers)")
     ing.add_argument("--file", help="Local JSON file containing demo-only fixture list")
     sub.add_parser("list", help="Show case status")
@@ -51,10 +51,11 @@ def run(argv=None):
                     continue
                 ledger.ingest(item)
                 ledger.start(item["id"])
-                ledger.approve(item["id"], "Demo Reviewer")
-                print(ledger.simulate_send(item["id"]))
-                ledger.confirm_booking(item["id"], "Demo Reviewer")
-                print(f"{item['id']} complete: 未対応 → 対応中 → 予約確定 [DEMO ONLY]")
+                case = ledger.get(item["id"])
+                print(f"{item['id']}: 対応中／承認待ち [DEMO ONLY]")
+                print(case["summary_ja"])
+                print("返信案:", case["draft"])
+                print(f"次: approve {item['id']} --reviewer 'Demo Reviewer' → send {item['id']} → book {item['id']} --reviewer 'Demo Reviewer'")
         elif args.command == "list":
             print(json.dumps(ledger.list(), ensure_ascii=False, indent=2))
         elif args.command == "show":
